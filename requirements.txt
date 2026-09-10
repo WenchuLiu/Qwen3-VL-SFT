@@ -1,0 +1,9 @@
+# Install a CUDA-compatible PyTorch build first when needed.
+torch>=2.6.0
+torchvision>=0.21.0
+transformers>=4.57.0
+accelerate>=1.7.0
+peft>=0.17.0
+qwen-vl-utils>=0.0.14
+Pillow>=10.0
+numpy>=1.24

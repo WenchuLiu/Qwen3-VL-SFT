@@ -1,0 +1,72 @@
+import json
+import unittest
+
+from qwen3vl_sft.evaluation.coco_protocol import (
+    LOSS_MODE,
+    PROMPT_TEMPLATE_VERSION,
+    SYSTEM_PROMPT,
+    build_eval_messages,
+    build_sft_record,
+)
+from qwen3vl_sft.evaluation.metrics import evaluate_episode_predictions, parse_detection_output
+
+
+def episode():
+    return {
+        "id": "episode-1",
+        "protocol": "positive_category_conditioned_icl",
+        "prompt_template_version": PROMPT_TEMPLATE_VERSION,
+        "category": "widget",
+        "num_shots": 1,
+        "support": [{"image_id": 1, "image": "/tmp/support.jpg", "boxes": [[100, 100, 400, 500]]}],
+        "query": {"image_id": 2, "image": "/tmp/query.jpg", "boxes": [[200, 200, 600, 700]]},
+    }
+
+
+class ProtocolTest(unittest.TestCase):
+    def test_sft_and_generation_use_the_same_protocol_prompt(self):
+        value = episode()
+        record = build_sft_record(
+            record_id=value["id"],
+            category=value["category"],
+            support=value["support"],
+            query=value["query"],
+        )
+        self.assertEqual(record["loss_mode"], LOSS_MODE)
+        self.assertEqual(record["num_shots"], 1)
+        self.assertEqual(record["image"], ["/tmp/support.jpg", "/tmp/query.jpg"])
+        self.assertEqual(record["conversations"][0], {"from": "system", "value": SYSTEM_PROMPT})
+        self.assertTrue(record["conversations"][1]["value"].startswith("<image>\nLocate"))
+        self.assertTrue(record["conversations"][3]["value"].startswith("<image>\nUsing the preceding"))
+
+        messages = build_eval_messages(value, min_pixels=3136, max_pixels=640000)
+        self.assertEqual([message["role"] for message in messages], ["system", "user", "assistant", "user"])
+        self.assertEqual(messages[1]["content"][1]["text"], record["conversations"][1]["value"][len("<image>\n"):])
+        self.assertEqual(messages[3]["content"][1]["text"], record["conversations"][3]["value"][len("<image>\n"):])
+        self.assertNotIn("600", json.dumps(messages[-1]))
+
+    def test_zero_shot_generation_keeps_the_same_query_protocol(self):
+        value = episode()
+        value["support"] = []
+        messages = build_eval_messages(value, min_pixels=3136, max_pixels=640000)
+        self.assertEqual([message["role"] for message in messages], ["system", "user"])
+        self.assertIn("Using the preceding in-context examples", messages[-1]["content"][1]["text"])
+
+    def test_parser_accepts_empty_json_and_fenced_grounding_json(self):
+        self.assertEqual(parse_detection_output("[]"), [])
+        text = "```json\n[{\"bbox_2d\":[1,2,300,400],\"label\":\"widget\"}]\n```"
+        self.assertEqual(parse_detection_output(text), [("widget", [1.0, 2.0, 300.0, 400.0])])
+        self.assertEqual(parse_detection_output("(widget, 1, 2, 300, 400);"), [("widget", [1.0, 2.0, 300.0, 400.0])])
+
+    def test_metrics_are_perfect_for_the_exact_response(self):
+        records = [episode()]
+        response = json.dumps([{"bbox_2d": [200, 200, 600, 700], "label": "widget"}])
+        result = evaluate_episode_predictions(records, [response])
+        summary = result["metrics_by_shot"]["1"]
+        self.assertEqual(summary["episodes"], 1)
+        self.assertEqual(summary["count_accuracy"], 1.0)
+        self.assertEqual(summary["f1_mean_over_iou"], 1.0)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+.env
+
+# Local datasets, model weights, caches, and experiment outputs.
+/data/
+/models/
+/weights/
+/cache/
+/runs/
+/outputs/
+/wandb/
+
+# Editor and OS files.
+.DS_Store
+.idea/
+.vscode/

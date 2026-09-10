@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qwen3-vl-sft"
+version = "0.1.0"
+description = "A focused, reproducible Qwen3-VL supervised fine-tuning toolkit."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "accelerate>=1.7.0",
+    "numpy>=1.24",
+    "peft>=0.17.0",
+    "Pillow>=10.0",
+    "qwen-vl-utils>=0.0.14",
+    "torch>=2.6.0",
+    "transformers>=4.57.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.8.0",
+]
+flash-attn = [
+    "flash-attn>=2.7.4",
+]
+
+[tool.setuptools.packages.find]
+include = ["qwen3vl_sft*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
