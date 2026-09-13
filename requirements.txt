@@ -6,4 +6,5 @@ accelerate>=1.7.0
 peft>=0.17.0
 qwen-vl-utils>=0.0.14
 Pillow>=10.0
+pycocotools>=2.0.7
 numpy>=1.24

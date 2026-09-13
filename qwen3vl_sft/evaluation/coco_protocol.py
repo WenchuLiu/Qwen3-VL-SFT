@@ -10,9 +10,8 @@ from __future__ import annotations
 import json
 from typing import Iterable, Mapping, Sequence
 
-
 PROTOCOL_NAME = "positive_category_conditioned_icl"
-PROMPT_TEMPLATE_VERSION = "inst-v2"
+PROMPT_TEMPLATE_VERSION = "inst-v3"
 LOSS_MODE = "last_assistant"
 
 SYSTEM_PROMPT = (
@@ -22,7 +21,8 @@ SYSTEM_PROMPT = (
     "preceding support image. Use these examples to infer how to detect the "
     "requested categories in the final query image. Output only the final "
     "query result in the requested JSON format, using 0-1000 normalized "
-    "coordinates; output [] when no requested object is present."
+    "coordinates. Return detections in descending confidence order with a "
+    "score from 0.0 to 1.0; output [] when no requested object is present."
 )
 
 
@@ -36,8 +36,10 @@ def build_question(category: str, *, query: bool = False) -> str:
     verb = "locate" if query else "Locate"
     return (
         f"{prefix}{verb} all of the following objects: {category} in "
-        f"{image_phrase} and output the coordinates in JSON format like "
-        '{"bbox_2d":[x1,y1,x2,y2], "label":"class_name"}.'
+        f"{image_phrase} and output at most 20 detections as a confidence-ranked "
+        "JSON list like "
+        '[{"bbox_2d":[x1,y1,x2,y2],"label":"class_name","score":0.95}]. '
+        "The score must be a number from 0.0 to 1.0."
     )
 
 
@@ -51,6 +53,7 @@ def format_answer(category: str, boxes: Iterable[Sequence[float]]) -> str:
                     for value in box
                 ],
                 "label": category,
+                "score": 1.0,
             }
             for box in boxes
         ],

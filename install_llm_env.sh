@@ -37,6 +37,7 @@ pip install \
   scipy==1.15.3 \
   scikit-learn==1.7.2 \
   pillow==12.2.0 \
+  pycocotools==2.0.11 \
   safetensors==0.8.0 \
   ninja==1.13.0 \
   wandb==0.28.0 \

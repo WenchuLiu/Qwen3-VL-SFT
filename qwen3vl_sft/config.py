@@ -52,7 +52,7 @@ def add_data_arguments(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--data-root", default=None)
     group.add_argument(
         "--eval-mode", choices=("none", "loss", "generation"), default="none",
-        help="none: no eval; loss: teacher-forced LM loss; generation: fixed episode F1.",
+        help="none: no eval; loss: teacher-forced LM loss; generation: fixed episode F1 and mAP.",
     )
     group.add_argument("--eval-ratio", type=float, default=0.0)
     group.add_argument("--eval-seed", type=int, default=42)

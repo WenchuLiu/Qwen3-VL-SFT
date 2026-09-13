@@ -12,8 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from qwen3vl_sft.evaluation.generation import evaluate_checkpoint
 from qwen3vl_sft.config import DEFAULT_MAX_PIXELS, DEFAULT_MIN_PIXELS
+from qwen3vl_sft.evaluation.generation import evaluate_checkpoint
 
 
 def main() -> None:
@@ -48,7 +48,13 @@ def main() -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     for shot, summary in payload["metrics_by_shot"].items():
-        print(f"{shot}-shot: F1@Mean={summary['f1_mean_over_iou']:.4f}")
+        model_map = summary["coco_map"]["model"]
+        ranking_map = summary["coco_map"]["ranking"]
+        print(
+            f"{shot}-shot: F1@Mean={summary['f1_mean_over_iou']:.4f}, "
+            f"mAP={model_map['map_50_95']:.4f}, AP50={model_map['map_50']:.4f}, "
+            f"ranking-mAP={ranking_map['map_50_95']:.4f}"
+        )
     print(f"Saved evaluation to {output}")
 
 

@@ -54,6 +54,14 @@ def main() -> None:
                     after_metrics["mean_matched_iou"]
                     - before_metrics["mean_matched_iou"]
                 ),
+                "map_50_95": (
+                    after_metrics["coco_map"]["model"]["map_50_95"]
+                    - before_metrics["coco_map"]["model"]["map_50_95"]
+                ),
+                "map_50": (
+                    after_metrics["coco_map"]["model"]["map_50"]
+                    - before_metrics["coco_map"]["model"]["map_50"]
+                ),
             },
         }
     output = Path(args.output)

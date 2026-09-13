@@ -53,6 +53,25 @@ F1        = 2 * precision * recall / (precision + recall)
 `f1_mean_over_iou` is the arithmetic mean of the ten threshold F1 values.
 `count_accuracy` and `mean_matched_iou` are retained as diagnostic metrics.
 
+## DetPO-style COCO mAP
+
+The generation prompt also asks for detections in descending confidence order
+and a numeric `score` for every box. Following DetPO, a missing score falls back
+to `0.5`. The parsed detections are restored to original-image pixel coordinates,
+converted from `xyxy` to COCO `xywh`, and evaluated with the official
+`pycocotools.COCOeval` implementation.
+
+Each shot summary contains `coco_map.model`, using the model-reported scores,
+and `coco_map.ranking`, replacing scores by a linear 1.0-to-0.1 rank score as
+DetPO's optional ranking rescorer does. `map_50_95`, `map_50`, and `map_75`
+correspond to the first three standard COCO statistics. The primary Trainer
+metric is `eval_coco_map` (one-shot model-score AP50:95).
+
+The metric is computed over the category-conditioned episodes in the fixed
+manifest. It uses COCO's AP algorithm, but it is not directly comparable to a
+full-dataset detector benchmark unless the manifest covers the intended image
+and category combinations, including negative queries.
+
 The default image budget is 3,136 to 640,000 pixels. If you override
 `--min-pixels` or `--max-pixels`, pass the same values to the standalone
 evaluator; the episode manifest does not silently encode preprocessing

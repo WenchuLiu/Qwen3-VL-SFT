@@ -19,6 +19,8 @@ class CocoFrame:
     category: str
     image_path: str
     boxes: tuple[tuple[int, int, int, int], ...]
+    width: int = 1000
+    height: int = 1000
 
 
 def _xywh_to_normalized(
@@ -120,6 +122,8 @@ def load_coco_frames(
                 category=categories[category_id],
                 image_path=str(image_path.resolve()),
                 boxes=tuple(sorted(set(boxes))),
+                width=int(image["width"]),
+                height=int(image["height"]),
             )
         )
     for frames in result.values():
@@ -169,7 +173,10 @@ def parse_shots(values: Sequence[str], *, allow_zero: bool = False) -> list[int]
 def _frame_record(frame: CocoFrame) -> dict:
     return {
         "image_id": frame.image_id,
+        "category_id": frame.category_id,
         "image": frame.image_path,
+        "width": frame.width,
+        "height": frame.height,
         "boxes": [list(box) for box in frame.boxes],
     }
 

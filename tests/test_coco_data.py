@@ -68,6 +68,7 @@ class CocoDataTest(unittest.TestCase):
             loaded = load_coco_frames(annotation_path, image_root, min_box_area_ratio=0.01)
             self.assertEqual([frame.image_id for frame in loaded["widget"]], [1, 2])
             self.assertEqual(loaded["widget"][0].boxes, ((100, 200, 400, 600),))
+            self.assertEqual((loaded["widget"][0].width, loaded["widget"][0].height), (100, 100))
 
             output_path = root / "train.json"
             cli = Path(__file__).parents[1] / "tools" / "build_coco.py"

@@ -7,8 +7,9 @@ RoPE preprocessing, while making the training and evaluation contract explicit.
 本仓库专门解决两个容易混淆的问题：
 
 1. `loss` eval 是 teacher-forcing 的语言模型 loss；它不是检测指标。
-2. COCO ICL eval 是固定 episodes 上的真实 `generate()`，再解析 bbox 计算
-   `F1@Mean`。训练中 eval 和独立 eval 使用完全相同的协议。
+2. COCO ICL eval 是固定 episodes 上的真实 `generate()`，再解析 bbox 和模型
+   自报置信度，计算 `F1@Mean` 与 DetPO 风格 COCO mAP。训练中 eval 和独立
+   eval 使用完全相同的协议。
 
 ## Design
 
@@ -31,7 +32,21 @@ script or a second evaluator.
 
 ## Install
 
-Use a CUDA-compatible PyTorch build for GPU training, then install this package:
+For the pinned CUDA 12.1 training environment, run the included setup script:
+
+```bash
+bash install_llm_env.sh
+conda activate llm
+python -m pip install -e . --no-deps
+```
+
+The script creates a Python 3.10 Conda environment named `llm`, installs the
+CUDA 12.1 PyTorch stack and the training/evaluation dependencies, then builds
+FlashAttention. A local CUDA toolkit with `nvcc` is required for the final
+FlashAttention step.
+
+Alternatively, use a CUDA-compatible PyTorch build and install the package in
+a virtual environment:
 
 ```bash
 python -m venv .venv
@@ -165,7 +180,7 @@ bash scripts/run_coco_before_after.sh
 | --- | --- | --- | --- | --- |
 | `none` | no eval | none | none | fastest training |
 | `loss` | forward pass | held-out assistant tokens | `eval_loss` | language-model fit |
-| `generation` | greedy `generate()` | fixed episode query boxes | `eval_coco_*` F1 | detection quality |
+| `generation` | greedy `generate()` | fixed episode query boxes | `eval_coco_*` F1 + mAP | detection quality |
 
 `generation` writes `generation_eval/step-*.json` under the training output
 directory. Standalone evaluation writes the same result schema. This avoids

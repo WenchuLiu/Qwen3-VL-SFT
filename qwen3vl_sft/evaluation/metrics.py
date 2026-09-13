@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import io
 import json
+import math
 import re
 from collections import defaultdict
+from contextlib import redirect_stdout
 from typing import Iterable, Sequence
-
 
 IOU_THRESHOLDS = tuple(0.50 + 0.05 * index for index in range(10))
 _RECORD_PATTERN = re.compile(
@@ -32,17 +34,29 @@ def _valid_box(values: Sequence[object]) -> list[float] | None:
     return box
 
 
-def parse_detection_output(text: str) -> list[tuple[str, list[float]]]:
-    """Parse JSON grounding output, with compatibility for legacy records."""
+def _valid_score(value: object) -> float:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return 0.5
+    if not math.isfinite(score) or score == -1.0:
+        return 0.5
+    return min(1.0, max(0.0, score))
+
+
+def parse_scored_detection_output(
+    text: str,
+) -> list[tuple[str, list[float], float]]:
+    """Parse DetPO-style grounding output and retain per-box model scores."""
     if not isinstance(text, str):
         return []
 
-    legacy = []
+    legacy: list[tuple[str, list[float], float]] = []
     for match in _RECORD_PATTERN.finditer(text):
         label = match.group("label").strip().strip("\"'")
         box = _valid_box([match.group(name) for name in ("x1", "y1", "x2", "y2")])
         if label and box is not None:
-            legacy.append((label, box))
+            legacy.append((label, box, 0.5))
     if legacy:
         return legacy
 
@@ -55,13 +69,15 @@ def parse_detection_output(text: str) -> list[tuple[str, list[float]]]:
         except json.JSONDecodeError:
             continue
         entries = candidate if isinstance(candidate, list) else [candidate]
-        parsed: list[tuple[str, list[float]]] = []
+        parsed: list[tuple[str, list[float], float]] = []
         for entry in entries:
             if not isinstance(entry, dict) or not isinstance(entry.get("label"), str):
                 continue
             box = _valid_box(entry.get("bbox_2d", []))
             if box is not None and entry["label"].strip():
-                parsed.append((entry["label"].strip(), box))
+                parsed.append(
+                    (entry["label"].strip(), box, _valid_score(entry.get("score", 0.5)))
+                )
         # A valid JSON list with no usable detections means an intentional [];
         # return it immediately rather than accidentally parsing a later list.
         if isinstance(candidate, list):
@@ -69,6 +85,11 @@ def parse_detection_output(text: str) -> list[tuple[str, list[float]]]:
         if parsed:
             return parsed
     return []
+
+
+def parse_detection_output(text: str) -> list[tuple[str, list[float]]]:
+    """Parse boxes while preserving the pre-mAP public return shape."""
+    return [(label, box) for label, box, _ in parse_scored_detection_output(text)]
 
 
 def compute_iou(left: Sequence[float], right: Sequence[float]) -> float:
@@ -176,6 +197,131 @@ def _finalize_shot_metrics(values: dict) -> dict:
     }
 
 
+COCO_STAT_NAMES = (
+    "map_50_95",
+    "map_50",
+    "map_75",
+    "map_small",
+    "map_medium",
+    "map_large",
+    "ar_1",
+    "ar_10",
+    "ar_100",
+    "ar_small",
+    "ar_medium",
+    "ar_large",
+)
+
+
+def _empty_coco_metrics() -> dict[str, object]:
+    return {"stats": [0.0] * len(COCO_STAT_NAMES), **dict.fromkeys(COCO_STAT_NAMES, 0.0)}
+
+
+def _coco_metrics(
+    episodes: Sequence[dict],
+    responses: Sequence[str],
+    *,
+    score_mode: str,
+) -> dict[str, object]:
+    """Run the same COCOeval bbox path used by DetPO on an episode subset."""
+    try:
+        from pycocotools.coco import COCO
+        from pycocotools.cocoeval import COCOeval
+    except ImportError as error:
+        raise ImportError(
+            "generation mAP requires pycocotools; install the project dependencies"
+        ) from error
+
+    categories = sorted({str(episode["category"]) for episode in episodes})
+    category_ids = {category: index + 1 for index, category in enumerate(categories)}
+    images = []
+    annotations = []
+    detections = []
+    annotation_id = 1
+
+    def to_pixels(box: Sequence[float], width: int, height: int) -> list[float]:
+        x1, y1, x2, y2 = (float(value) for value in box)
+        return [
+            x1 / 1000.0 * width,
+            y1 / 1000.0 * height,
+            x2 / 1000.0 * width,
+            y2 / 1000.0 * height,
+        ]
+
+    # Each episode is a distinct category-conditioned evaluation sample, even
+    # when two episodes happen to reuse the same underlying query image.
+    for image_id, (episode, response) in enumerate(zip(episodes, responses), start=1):
+        category = str(episode["category"])
+        category_id = category_ids[category]
+        query = episode["query"]
+        width = int(query.get("width", 1000))
+        height = int(query.get("height", 1000))
+        if width < 1 or height < 1:
+            raise ValueError(f"episode {episode.get('id', image_id)!r} has invalid image size")
+        images.append({"id": image_id, "width": width, "height": height})
+        for box in query.get("boxes", []):
+            x1, y1, x2, y2 = to_pixels(box, width, height)
+            box_width, box_height = x2 - x1, y2 - y1
+            annotations.append(
+                {
+                    "id": annotation_id,
+                    "image_id": image_id,
+                    "category_id": category_id,
+                    "bbox": [x1, y1, box_width, box_height],
+                    "area": box_width * box_height,
+                    "iscrowd": 0,
+                }
+            )
+            annotation_id += 1
+
+        parsed = [
+            (box, score)
+            for label, box, score in parse_scored_detection_output(response)
+            if label == category
+        ]
+        count = len(parsed)
+        for rank, (box, model_score) in enumerate(parsed):
+            x1, y1, x2, y2 = to_pixels(box, width, height)
+            score = model_score
+            if score_mode == "ranking":
+                score = 1.0 if count == 1 else 1.0 - 0.9 * rank / (count - 1)
+            detections.append(
+                {
+                    "image_id": image_id,
+                    "category_id": category_id,
+                    "bbox": [x1, y1, x2 - x1, y2 - y1],
+                    "score": score,
+                }
+            )
+
+    if not annotations or not detections:
+        return _empty_coco_metrics()
+
+    coco_gt = COCO()
+    coco_gt.dataset = {
+        "info": {},
+        "licenses": [],
+        "images": images,
+        "annotations": annotations,
+        "categories": [
+            {"id": category_id, "name": category}
+            for category, category_id in category_ids.items()
+        ],
+    }
+    # pycocotools is intentionally chatty; result JSON and CLI summaries are
+    # the stable reporting surface for this project.
+    with redirect_stdout(io.StringIO()):
+        coco_gt.createIndex()
+        coco_dt = coco_gt.loadRes(detections)
+        evaluator = COCOeval(coco_gt, coco_dt, "bbox")
+        evaluator.params.imgIds = [image["id"] for image in images]
+        evaluator.evaluate()
+        evaluator.accumulate()
+        evaluator.summarize()
+    stats = [max(0.0, float(value)) for value in evaluator.stats]
+    return {"stats": stats, **dict(zip(COCO_STAT_NAMES, stats))}
+
+
 def evaluate_episode_predictions(
     episodes: Iterable[dict],
     responses: Iterable[str],
@@ -193,9 +339,12 @@ def evaluate_episode_predictions(
     for episode, response in zip(episodes, responses):
         category = episode["category"]
         target_boxes = episode["query"].get("boxes", [])
-        predicted_boxes = [
-            box for label, box in parse_detection_output(response) if label == category
+        scored_predictions = [
+            (box, score)
+            for label, box, score in parse_scored_detection_output(response)
+            if label == category
         ]
+        predicted_boxes = [box for box, _ in scored_predictions]
         shot = str(episode["num_shots"])
         values = metrics_by_shot[shot]
         values["episodes"] += 1
@@ -219,14 +368,30 @@ def evaluate_episode_predictions(
                 "query_image_id": episode["query"].get("image_id"),
                 "target_boxes": target_boxes,
                 "predicted_boxes": predicted_boxes,
+                "predicted_detections": [
+                    {"bbox_2d": box, "score": score} for box, score in scored_predictions
+                ],
                 "response": response,
             }
         )
+    finalized = {
+        shot: _finalize_shot_metrics(values)
+        for shot, values in sorted(metrics_by_shot.items(), key=lambda item: int(item[0]))
+    }
+    for shot, summary in finalized.items():
+        selected = [
+            (episode, response)
+            for episode, response in zip(episodes, responses)
+            if str(episode["num_shots"]) == shot
+        ]
+        shot_episodes = [item[0] for item in selected]
+        shot_responses = [item[1] for item in selected]
+        summary["coco_map"] = {
+            "model": _coco_metrics(shot_episodes, shot_responses, score_mode="model"),
+            "ranking": _coco_metrics(shot_episodes, shot_responses, score_mode="ranking"),
+        }
     return {
-        "metrics_by_shot": {
-            shot: _finalize_shot_metrics(values)
-            for shot, values in sorted(metrics_by_shot.items(), key=lambda item: int(item[0]))
-        },
+        "metrics_by_shot": finalized,
         "predictions": predictions,
     }
 
@@ -240,6 +405,12 @@ def trainer_metrics(result: dict) -> dict[str, float]:
         metrics[f"{prefix}_f1"] = float(summary["f1_mean_over_iou"])
         metrics[f"{prefix}_count_accuracy"] = float(summary["count_accuracy"])
         metrics[f"{prefix}_mean_matched_iou"] = float(summary["mean_matched_iou"])
+        metrics[f"{prefix}_map"] = float(summary["coco_map"]["model"]["map_50_95"])
+        metrics[f"{prefix}_map_50"] = float(summary["coco_map"]["model"]["map_50"])
+        metrics[f"{prefix}_map_75"] = float(summary["coco_map"]["model"]["map_75"])
+        metrics[f"{prefix}_ranking_map"] = float(
+            summary["coco_map"]["ranking"]["map_50_95"]
+        )
         for threshold, values in summary["thresholds"].items():
             suffix = threshold.lower().replace("@", "_").replace(".", "_")
             metrics[f"{prefix}_{suffix}_f1"] = float(values["f1"])
@@ -249,6 +420,9 @@ def trainer_metrics(result: dict) -> dict[str, float]:
         metrics["eval_coco_count_accuracy"] = float(one_shot["count_accuracy"])
         metrics["eval_coco_mean_matched_iou"] = float(one_shot["mean_matched_iou"])
         metrics["eval_coco_iou_0_50_f1"] = float(one_shot["thresholds"]["IoU@0.50"]["f1"])
+        metrics["eval_coco_map"] = float(one_shot["coco_map"]["model"]["map_50_95"])
+        metrics["eval_coco_map_50"] = float(one_shot["coco_map"]["model"]["map_50"])
+        metrics["eval_coco_map_75"] = float(one_shot["coco_map"]["model"]["map_75"])
     metrics["eval_coco_episodes"] = float(
         sum(summary["episodes"] for summary in by_shot.values())
     )

@@ -14,7 +14,7 @@ from .evaluation.metrics import trainer_metrics
 
 
 class GenerationEvalTrainer(Trainer):
-    """Hugging Face Trainer whose ``evaluate`` is fixed-episode generation F1."""
+    """Trainer whose ``evaluate`` runs fixed-episode detection metrics."""
 
     def __init__(
         self,

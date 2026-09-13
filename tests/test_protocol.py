@@ -8,7 +8,11 @@ from qwen3vl_sft.evaluation.coco_protocol import (
     build_eval_messages,
     build_sft_record,
 )
-from qwen3vl_sft.evaluation.metrics import evaluate_episode_predictions, parse_detection_output
+from qwen3vl_sft.evaluation.metrics import (
+    evaluate_episode_predictions,
+    parse_detection_output,
+    parse_scored_detection_output,
+)
 
 
 def episode():
@@ -58,6 +62,21 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(parse_detection_output(text), [("widget", [1.0, 2.0, 300.0, 400.0])])
         self.assertEqual(parse_detection_output("(widget, 1, 2, 300, 400);"), [("widget", [1.0, 2.0, 300.0, 400.0])])
 
+    def test_parser_uses_detpo_score_and_missing_score_fallback(self):
+        scored = json.dumps(
+            [
+                {"bbox_2d": [1, 2, 30, 40], "label": "widget", "score": 0.8},
+                {"bbox_2d": [5, 6, 50, 60], "label": "widget"},
+            ]
+        )
+        self.assertEqual(
+            parse_scored_detection_output(scored),
+            [
+                ("widget", [1.0, 2.0, 30.0, 40.0], 0.8),
+                ("widget", [5.0, 6.0, 50.0, 60.0], 0.5),
+            ],
+        )
+
     def test_metrics_are_perfect_for_the_exact_response(self):
         records = [episode()]
         response = json.dumps([{"bbox_2d": [200, 200, 600, 700], "label": "widget"}])
@@ -66,6 +85,19 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(summary["episodes"], 1)
         self.assertEqual(summary["count_accuracy"], 1.0)
         self.assertEqual(summary["f1_mean_over_iou"], 1.0)
+        self.assertAlmostEqual(summary["coco_map"]["model"]["map_50_95"], 1.0)
+
+    def test_coco_map_uses_model_score_and_detection_ranking(self):
+        records = [episode()]
+        response = json.dumps(
+            [
+                {"bbox_2d": [0, 0, 100, 100], "label": "widget", "score": 0.1},
+                {"bbox_2d": [200, 200, 600, 700], "label": "widget", "score": 0.9},
+            ]
+        )
+        summary = evaluate_episode_predictions(records, [response])["metrics_by_shot"]["1"]
+        self.assertAlmostEqual(summary["coco_map"]["model"]["map_50_95"], 1.0)
+        self.assertAlmostEqual(summary["coco_map"]["ranking"]["map_50_95"], 0.5)
 
 
 if __name__ == "__main__":
