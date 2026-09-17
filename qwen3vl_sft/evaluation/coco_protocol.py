@@ -1,8 +1,8 @@
-"""The single COCO in-context detection protocol used by this repository.
+"""COCO in-context detection prompts used by training and evaluation.
 
-Training-data construction and model evaluation must agree on the prompt.  The
-functions in this module are deliberately dependency-light and are imported by
-both paths; do not duplicate the prompt in a shell script or trainer subclass.
+Training teaches box and label generation without synthetic confidence targets.
+Evaluation keeps the same support format but asks the final query for confidence
+scores.  Both paths live here so their intentional difference remains explicit.
 """
 
 from __future__ import annotations
@@ -11,22 +11,37 @@ import json
 from typing import Iterable, Mapping, Sequence
 
 PROTOCOL_NAME = "positive_category_conditioned_icl"
-PROMPT_TEMPLATE_VERSION = "inst-v3"
+PROMPT_TEMPLATE_VERSION = "inst-v4"
 LOSS_MODE = "last_assistant"
 
-SYSTEM_PROMPT = (
+TRAIN_SYSTEM_PROMPT = (
     "You are an object detection assistant. "
     "The following image-question-answer pairs are in-context examples. "
     "Each assistant response gives the correct detection result for the "
     "preceding support image. Use these examples to infer how to detect the "
     "requested categories in the final query image. Output only the final "
     "query result in the requested JSON format, using 0-1000 normalized "
-    "coordinates. Return detections in descending confidence order with a "
-    "score from 0.0 to 1.0; output [] when no requested object is present."
+    "coordinates. Output [] when no requested object is present."
+)
+
+EVAL_SYSTEM_PROMPT = (
+    "You are an object detection assistant. "
+    "The following image-question-answer pairs are in-context examples. "
+    "Their answers demonstrate the box and label format without confidence "
+    "scores. Use these examples to detect the requested category in the final "
+    "query image. For the final query only, estimate a confidence score from "
+    "0.0 to 1.0 for every detection and return detections in descending "
+    "confidence order. Output only the requested JSON list, using 0-1000 "
+    "normalized coordinates; output [] when no requested object is present."
 )
 
 
-def build_question(category: str, *, query: bool = False) -> str:
+def build_question(
+    category: str,
+    *,
+    query: bool = False,
+    include_confidence: bool = False,
+) -> str:
     """Build the canonical category-conditioned grounding question."""
     if not isinstance(category, str) or not category.strip():
         raise ValueError("category must be a non-empty string")
@@ -34,17 +49,22 @@ def build_question(category: str, *, query: bool = False) -> str:
     prefix = "Using the preceding in-context examples, " if query else ""
     image_phrase = "the query image" if query else "the image"
     verb = "locate" if query else "Locate"
-    return (
+    question = (
         f"{prefix}{verb} all of the following objects: {category} in "
-        f"{image_phrase} and output at most 20 detections as a confidence-ranked "
-        "JSON list like "
-        '[{"bbox_2d":[x1,y1,x2,y2],"label":"class_name","score":0.95}]. '
-        "The score must be a number from 0.0 to 1.0."
+        f"{image_phrase} and output at most 20 detections as a JSON list like "
     )
+    if include_confidence:
+        return (
+            question
+            + '[{"bbox_2d":[x1,y1,x2,y2],"label":"class_name","score":0.95}]. '
+            "Estimate each score from 0.0 to 1.0 and order detections by "
+            "descending confidence."
+        )
+    return question + '[{"bbox_2d":[x1,y1,x2,y2],"label":"class_name"}].'
 
 
 def format_answer(category: str, boxes: Iterable[Sequence[float]]) -> str:
-    """Serialize normalized xyxy boxes in the model's expected JSON format."""
+    """Serialize GT boxes without inventing confidence supervision."""
     return json.dumps(
         [
             {
@@ -53,7 +73,6 @@ def format_answer(category: str, boxes: Iterable[Sequence[float]]) -> str:
                     for value in box
                 ],
                 "label": category,
-                "score": 1.0,
             }
             for box in boxes
         ],
@@ -93,7 +112,7 @@ def build_sft_record(
     if not frames:
         raise ValueError("an SFT episode must contain a query frame")
 
-    conversations = [{"from": "system", "value": SYSTEM_PROMPT}]
+    conversations = [{"from": "system", "value": TRAIN_SYSTEM_PROMPT}]
     for index, frame in enumerate(frames):
         is_query = index == len(frames) - 1
         conversations.extend(
@@ -127,9 +146,8 @@ def build_eval_messages(
 ) -> list[dict]:
     """Build the generation prompt for one fixed episode.
 
-    This is the same conversation represented by :func:`build_sft_record`,
-    except that the final query answer is omitted and image pixel budgets are
-    attached explicitly for the processor.
+    Support turns retain the score-free SFT schema.  The final query answer is
+    omitted and its prompt explicitly requests model-estimated confidence.
     """
     category = record.get("category")
     support = record.get("support")
@@ -140,7 +158,7 @@ def build_eval_messages(
         raise ValueError("invalid evaluation pixel budget")
 
     messages: list[dict] = [
-        {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]}
+        {"role": "system", "content": [{"type": "text", "text": EVAL_SYSTEM_PROMPT}]}
     ]
     support_question = build_question(category)
     for frame in support:
@@ -179,7 +197,14 @@ def build_eval_messages(
                     "min_pixels": min_pixels,
                     "max_pixels": max_pixels,
                 },
-                        {"type": "text", "text": build_question(category, query=True)},
+                {
+                    "type": "text",
+                    "text": build_question(
+                        category,
+                        query=True,
+                        include_confidence=True,
+                    ),
+                },
             ],
         }
     )

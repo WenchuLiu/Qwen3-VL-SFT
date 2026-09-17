@@ -8,6 +8,7 @@ import math
 import re
 from collections import defaultdict
 from contextlib import redirect_stdout
+from pathlib import Path
 from typing import Iterable, Sequence
 
 IOU_THRESHOLDS = tuple(0.50 + 0.05 * index for index in range(10))
@@ -217,13 +218,19 @@ def _empty_coco_metrics() -> dict[str, object]:
     return {"stats": [0.0] * len(COCO_STAT_NAMES), **dict.fromkeys(COCO_STAT_NAMES, 0.0)}
 
 
-def _coco_metrics(
+def _synthetic_coco_metrics(
     episodes: Sequence[dict],
     responses: Sequence[str],
     *,
     score_mode: str,
 ) -> dict[str, object]:
-    """Run the same COCOeval bbox path used by DetPO on an episode subset."""
+    """Compatibility metric for in-memory records without COCO provenance.
+
+    Real CLI and Trainer evaluations always provide ``query_annotations`` and
+    use the official branch below.  This fallback keeps small protocol tests
+    and legacy callers, which have no original COCO IDs/annotation file,
+    evaluable with the same pycocotools implementation.
+    """
     try:
         from pycocotools.coco import COCO
         from pycocotools.cocoeval import COCOeval
@@ -248,32 +255,147 @@ def _coco_metrics(
             y2 / 1000.0 * height,
         ]
 
-    # Each episode is a distinct category-conditioned evaluation sample, even
-    # when two episodes happen to reuse the same underlying query image.
     for image_id, (episode, response) in enumerate(zip(episodes, responses), start=1):
         category = str(episode["category"])
         category_id = category_ids[category]
         query = episode["query"]
         width = int(query.get("width", 1000))
         height = int(query.get("height", 1000))
-        if width < 1 or height < 1:
-            raise ValueError(f"episode {episode.get('id', image_id)!r} has invalid image size")
         images.append({"id": image_id, "width": width, "height": height})
         for box in query.get("boxes", []):
             x1, y1, x2, y2 = to_pixels(box, width, height)
-            box_width, box_height = x2 - x1, y2 - y1
             annotations.append(
                 {
                     "id": annotation_id,
                     "image_id": image_id,
                     "category_id": category_id,
-                    "bbox": [x1, y1, box_width, box_height],
-                    "area": box_width * box_height,
+                    "bbox": [x1, y1, x2 - x1, y2 - y1],
+                    "area": (x2 - x1) * (y2 - y1),
                     "iscrowd": 0,
                 }
             )
             annotation_id += 1
+        parsed = [
+            (box, score)
+            for label, box, score in parse_scored_detection_output(response)
+            if label == category
+        ]
+        count = len(parsed)
+        for rank, (box, model_score) in enumerate(parsed):
+            x1, y1, x2, y2 = to_pixels(box, width, height)
+            score = model_score if score_mode == "model" else (
+                1.0 if count == 1 else 1.0 - 0.9 * rank / (count - 1)
+            )
+            detections.append(
+                {
+                    "image_id": image_id,
+                    "category_id": category_id,
+                    "bbox": [x1, y1, x2 - x1, y2 - y1],
+                    "score": score,
+                }
+            )
+    if not annotations or not detections:
+        return _empty_coco_metrics()
+    coco_gt = COCO()
+    coco_gt.dataset = {
+        "info": {},
+        "licenses": [],
+        "images": images,
+        "annotations": annotations,
+        "categories": [
+            {"id": category_id, "name": category}
+            for category, category_id in category_ids.items()
+        ],
+    }
+    with redirect_stdout(io.StringIO()):
+        coco_gt.createIndex()
+        coco_dt = coco_gt.loadRes(detections)
+        evaluator = COCOeval(coco_gt, coco_dt, "bbox")
+        evaluator.params.imgIds = [image["id"] for image in images]
+        evaluator.evaluate()
+        evaluator.accumulate()
+        evaluator.summarize()
+    stats = [float(value) for value in evaluator.stats]
+    return {"stats": stats, **dict(zip(COCO_STAT_NAMES, stats))}
 
+
+def _coco_metrics(
+    episodes: Sequence[dict],
+    responses: Sequence[str],
+    *,
+    score_mode: str,
+    coco_annotations_path: str | None,
+) -> dict[str, object]:
+    """Evaluate task-conditioned detections with the official COCO API.
+
+    DetPO loads the dataset's COCO annotation file and feeds predictions with
+    the dataset's original image/category IDs to ``COCOeval``.  An ICL episode
+    asks for one category in one query image, so construct a task subset of
+    that official ground truth rather than treating normalized episode boxes as
+    a new synthetic dataset.
+    """
+    if not coco_annotations_path:
+        return _synthetic_coco_metrics(episodes, responses, score_mode=score_mode)
+    try:
+        from pycocotools.coco import COCO
+        from pycocotools.cocoeval import COCOeval
+    except ImportError as error:
+        raise ImportError(
+            "generation mAP requires pycocotools; install the project dependencies"
+        ) from error
+
+    annotation_path = Path(coco_annotations_path).expanduser().resolve()
+    if not annotation_path.is_file():
+        raise FileNotFoundError(f"COCO query annotations not found: {annotation_path}")
+
+    coco_gt = COCO(str(annotation_path))
+    task_pairs: set[tuple[int, int]] = set()
+    task_image_ids: set[int] = set()
+    task_category_ids: set[int] = set()
+    for episode in episodes:
+        query = episode["query"]
+        try:
+            image_id = int(query["image_id"])
+            category_id = int(query["category_id"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(
+                "official COCO mAP requires query.image_id and query.category_id"
+            ) from error
+        if image_id not in coco_gt.imgs:
+            raise ValueError(f"query image_id {image_id} is absent from {annotation_path}")
+        if category_id not in coco_gt.cats:
+            raise ValueError(f"query category_id {category_id} is absent from {annotation_path}")
+        task_pairs.add((image_id, category_id))
+        task_image_ids.add(image_id)
+        task_category_ids.add(category_id)
+
+    images = [coco_gt.imgs[image_id] for image_id in sorted(task_image_ids)]
+    annotations = [
+        annotation
+        for annotation in coco_gt.dataset.get("annotations", [])
+        if (int(annotation["image_id"]), int(annotation["category_id"])) in task_pairs
+    ]
+    categories = [coco_gt.cats[category_id] for category_id in sorted(task_category_ids)]
+    detections = []
+
+    def to_pixels(box: Sequence[float], width: int, height: int) -> list[int]:
+        x1, y1, x2, y2 = (float(value) for value in box)
+        return [
+            int(x1 / 1000.0 * width),
+            int(y1 / 1000.0 * height),
+            int(x2 / 1000.0 * width),
+            int(y2 / 1000.0 * height),
+        ]
+
+    for episode, response in zip(episodes, responses):
+        category = str(episode["category"])
+        query = episode["query"]
+        image_id = int(query["image_id"])
+        category_id = int(query["category_id"])
+        width = int(query.get("width", 1000))
+        height = int(query.get("height", 1000))
+        if width < 1 or height < 1:
+            raise ValueError(f"episode {episode.get('id', image_id)!r} has invalid image size")
         parsed = [
             (box, score)
             for label, box, score in parse_scored_detection_output(response)
@@ -297,34 +419,34 @@ def _coco_metrics(
     if not annotations or not detections:
         return _empty_coco_metrics()
 
-    coco_gt = COCO()
-    coco_gt.dataset = {
-        "info": {},
-        "licenses": [],
+    coco_gt_subset = COCO()
+    coco_gt_subset.dataset = {
+        "info": coco_gt.dataset.get("info", {}),
+        "licenses": coco_gt.dataset.get("licenses", []),
         "images": images,
         "annotations": annotations,
-        "categories": [
-            {"id": category_id, "name": category}
-            for category, category_id in category_ids.items()
-        ],
+        "categories": categories,
     }
     # pycocotools is intentionally chatty; result JSON and CLI summaries are
     # the stable reporting surface for this project.
     with redirect_stdout(io.StringIO()):
-        coco_gt.createIndex()
-        coco_dt = coco_gt.loadRes(detections)
-        evaluator = COCOeval(coco_gt, coco_dt, "bbox")
-        evaluator.params.imgIds = [image["id"] for image in images]
+        coco_gt_subset.createIndex()
+        coco_dt = coco_gt_subset.loadRes(detections)
+        evaluator = COCOeval(coco_gt_subset, coco_dt, "bbox")
+        evaluator.params.imgIds = sorted(task_image_ids)
+        evaluator.params.catIds = sorted(task_category_ids)
         evaluator.evaluate()
         evaluator.accumulate()
         evaluator.summarize()
-    stats = [max(0.0, float(value)) for value in evaluator.stats]
+    stats = [float(value) for value in evaluator.stats]
     return {"stats": stats, **dict(zip(COCO_STAT_NAMES, stats))}
 
 
 def evaluate_episode_predictions(
     episodes: Iterable[dict],
     responses: Iterable[str],
+    *,
+    coco_annotations_path: str | None = None,
 ) -> dict:
     """Compute per-shot metrics and retain every raw response for auditing."""
     episodes = list(episodes)
@@ -387,8 +509,18 @@ def evaluate_episode_predictions(
         shot_episodes = [item[0] for item in selected]
         shot_responses = [item[1] for item in selected]
         summary["coco_map"] = {
-            "model": _coco_metrics(shot_episodes, shot_responses, score_mode="model"),
-            "ranking": _coco_metrics(shot_episodes, shot_responses, score_mode="ranking"),
+            "model": _coco_metrics(
+                shot_episodes,
+                shot_responses,
+                score_mode="model",
+                coco_annotations_path=coco_annotations_path,
+            ),
+            "ranking": _coco_metrics(
+                shot_episodes,
+                shot_responses,
+                score_mode="ranking",
+                coco_annotations_path=coco_annotations_path,
+            ),
         }
     return {
         "metrics_by_shot": finalized,

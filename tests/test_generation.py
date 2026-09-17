@@ -60,6 +60,56 @@ class GenerationTest(unittest.TestCase):
         )
         self.assertEqual(result["metrics_by_shot"]["0"]["count_accuracy"], 1.0)
 
+    def test_map_uses_official_coco_annotations(self):
+        try:
+            import pycocotools  # noqa: F401
+        except ImportError:
+            self.skipTest("pycocotools is required for official COCO mAP")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            annotations = root / "instances.json"
+            annotations.write_text(
+                json.dumps(
+                    {
+                        "images": [{"id": 17, "file_name": "image.jpg", "width": 100, "height": 100}],
+                        "categories": [{"id": 7, "name": "widget"}],
+                        "annotations": [
+                            {
+                                "id": 3,
+                                "image_id": 17,
+                                "category_id": 7,
+                                "bbox": [10, 20, 30, 40],
+                                "area": 1200,
+                                "iscrowd": 0,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = evaluate_episode_predictions(
+                [
+                    {
+                        "category": "widget",
+                        "num_shots": 1,
+                        # Deliberately inconsistent with the official GT: mAP
+                        # must use instances.json, not this convenience field.
+                        "query": {
+                            "image_id": 17,
+                            "category_id": 7,
+                            "width": 100,
+                            "height": 100,
+                            "boxes": [[0, 0, 100, 100]],
+                        },
+                    }
+                ],
+                ['[{"bbox_2d":[100,200,400,600],"label":"widget"}]'],
+                coco_annotations_path=str(annotations),
+            )
+            metrics = result["metrics_by_shot"]["1"]["coco_map"]["model"]
+            self.assertAlmostEqual(metrics["map_50_95"], 1.0)
+            self.assertAlmostEqual(metrics["map_50"], 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

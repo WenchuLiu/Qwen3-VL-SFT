@@ -28,22 +28,29 @@ tests/           CPU-only protocol and metric tests
 
 The source of truth for the COCO protocol is
 `qwen3vl_sft/evaluation/coco_protocol.py`. Do not copy its prompt into a shell
-script or a second evaluator.
+script or a second evaluator. The default and only supported prompt template is
+`inst-v4`: SFT targets omit confidence, while the final evaluation query asks
+the model to estimate confidence for each predicted box.
 
 ## Install
 
-For the pinned CUDA 12.1 training environment, run the included setup script:
+For the pinned NVIDIA A40 training environment, first request one GPU and enter
+the node allocated by Slurm. For example, if the allocation reports `gpu1`:
 
 ```bash
+salloc -p gpu -N1 -n3 --gres=gpu:1
+ssh gpu1
+cd /home/u1120240334/code/Qwen3-VL-SFT
 bash install_llm_env.sh
-conda activate llm
-python -m pip install -e . --no-deps
+conda activate LLM
 ```
 
-The script creates a Python 3.10 Conda environment named `llm`, installs the
-CUDA 12.1 PyTorch stack and the training/evaluation dependencies, then builds
-FlashAttention. A local CUDA toolkit with `nvcc` is required for the final
-FlashAttention step.
+The script creates (or updates) a Python 3.10 Conda environment named `LLM`,
+installs PyTorch 2.6 with CUDA 11.8 and an environment-local CUDA toolkit, then
+builds FlashAttention for the A40's `sm_86` architecture. It finishes with an
+actual BF16 CUDA operation. CUDA 11.8 is intentional: it supports the A40 while
+requiring an older cluster driver than CUDA 12.4. After leaving the GPU node,
+release the allocation with `scancel JOBID`.
 
 Alternatively, use a CUDA-compatible PyTorch build and install the package in
 a virtual environment:
@@ -100,11 +107,18 @@ torchrun --nproc_per_node=2 -m qwen3vl_sft.train \
 The equivalent wrapper is `scripts/train_lora.sh`:
 
 ```bash
+export SWANLAB_API_KEY=your_api_key
 MODEL_NAME_OR_PATH=Qwen/Qwen3-VL-4B-Instruct \
 DATASET=/data/my_train.json \
 OUTPUT_DIR=runs/my-lora \
 bash scripts/train_lora.sh
 ```
+
+The wrapper reports to SwanLab by default using project
+`qwen3vl-coco-sft`, names the run after `OUTPUT_DIR`, and trains for 12 epochs.
+Override these defaults with `SWANLAB_PROJECT`, `RUN_NAME`, `REPORT_TO`, or
+`NUM_TRAIN_EPOCHS`. Keep `SWANLAB_API_KEY` in the environment; do not store it
+in a script or configuration committed to Git.
 
 For ordinary held-out language-model validation:
 
@@ -134,6 +148,10 @@ export COCO_ROOT=/data/coco
 bash scripts/build_coco_train.sh
 bash scripts/build_coco_eval.sh
 ```
+
+The training-data wrapper defaults to the deterministic 10% train2017 image
+pool (11,829 selected image IDs), 11,829 category-balanced episodes, and a
+near-uniform 1/2/4-shot mixture (3-shot is intentionally excluded).
 
 Evaluate the base model:
 

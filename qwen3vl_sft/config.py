@@ -76,7 +76,7 @@ def add_training_arguments(parser: argparse.ArgumentParser) -> None:
         choices=("sdpa", "flash_attention_2", "eager"),
         default="sdpa",
     )
-    group.add_argument("--num-train-epochs", type=float, default=1.0)
+    group.add_argument("--num-train-epochs", type=float, default=12.0)
     group.add_argument("--max-steps", type=int, default=-1)
     group.add_argument("--per-device-train-batch-size", type=int, default=1)
     group.add_argument("--per-device-eval-batch-size", type=int, default=1)
@@ -88,7 +88,7 @@ def add_training_arguments(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--optim", default="adamw_torch")
     group.add_argument("--max-grad-norm", type=float, default=1.0)
     group.add_argument("--logging-steps", type=int, default=10)
-    group.add_argument("--save-strategy", choices=("steps", "epoch", "no"), default="steps")
+    group.add_argument("--save-strategy", choices=("steps", "epoch", "no"), default="epoch")
     group.add_argument("--save-steps", type=int, default=500)
     group.add_argument("--save-total-limit", type=int, default=2)
     group.add_argument("--eval-strategy", choices=("no", "steps", "epoch"), default="no")
@@ -100,7 +100,7 @@ def add_training_arguments(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--resume-training", type=str_to_bool, default=True)
     group.add_argument("--seed", type=int, default=42)
     group.add_argument("--run-name", default=None)
-    group.add_argument("--report-to", default="none")
+    group.add_argument("--report-to", default="swanlab")
     group.add_argument("--bf16", type=str_to_bool, default=True)
     group.add_argument("--fp16", type=str_to_bool, default=False)
     group.add_argument("--tf32", type=str_to_bool, default=True)

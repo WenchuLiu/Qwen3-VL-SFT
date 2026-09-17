@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 
 import torch
@@ -16,10 +17,25 @@ from .modeling import (
     load_model_and_processor,
     save_model_and_processor,
 )
-from .trainers import GenerationEvalTrainer
+from .trainers import GenerationEvalTrainer, TrainingTelemetryTrainer
 
 
 logger = logging.getLogger(__name__)
+
+
+def _disable_proxy_environment() -> None:
+    """Prevent training and metric logging from inheriting a stale proxy."""
+    for name in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+    ):
+        os.environ.pop(name, None)
 
 
 def _report_to(value: str) -> list[str] | str:
@@ -28,11 +44,69 @@ def _report_to(value: str) -> list[str] | str:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _trainer_report_to(value: str) -> list[str]:
+    """Return Trainer integrations other than SwanLab.
+
+    SwanLab is logged by ``TrainingTelemetryCallback`` so that its payload can
+    be restricted to the small set of metrics used for SFT monitoring.
+    """
+    return [item for item in _report_to(value) if item.lower() != "swanlab"]
+
+
 def _has_checkpoint(output_dir: Path) -> bool:
     return any(
         path.is_dir() and (path / "trainer_state.json").is_file()
         for path in output_dir.glob("checkpoint-*")
     )
+
+
+def _init_swanlab_if_requested(args) -> None:
+    """Create the run before the custom telemetry callback starts logging.
+
+    SwanLab 0.10 raises when ``get_run`` is called before initialization.
+    Initialize only the world-process-zero rank; metric handling is kept in the
+    custom callback so only the requested metrics are uploaded.
+    """
+    if not any(item.lower() == "swanlab" for item in _report_to(args.report_to)):
+        return
+    # ``torchrun`` exports RANK before the process group is initialized. Check
+    # it first so multi-GPU launches do not create one SwanLab run per worker.
+    try:
+        launch_rank = int(os.getenv("RANK", "0"))
+    except ValueError:
+        launch_rank = 0
+    if launch_rank != 0:
+        return
+    if (
+        torch.distributed.is_available()
+        and torch.distributed.is_initialized()
+        and torch.distributed.get_rank() != 0
+    ):
+        return
+
+    import swanlab
+
+    try:
+        active_run = swanlab.get_run()
+    except RuntimeError:
+        active_run = None
+    if active_run is not None:
+        return
+
+    # SWANLAB_PROJECT is parsed as a structured setting by newer SDKs. Use the
+    # scalar compatibility variable and remove the conflicting name before
+    # calling init; the Transformers callback only needs the already-active run.
+    project = os.getenv("SWANLAB_PROJ_NAME") or os.getenv("SWANLAB_PROJECT")
+    os.environ.pop("SWANLAB_PROJECT", None)
+    init_args = {}
+    if project:
+        init_args["project"] = project
+    workspace = os.getenv("SWANLAB_WORKSPACE")
+    if workspace:
+        init_args["workspace"] = workspace
+    if args.run_name:
+        init_args["experiment_name"] = args.run_name
+    swanlab.init(**init_args)
 
 
 def _training_args(args):
@@ -81,11 +155,12 @@ def _training_args(args):
         tf32=args.tf32 and torch.cuda.is_available(),
         seed=args.seed,
         run_name=args.run_name,
-        report_to=_report_to(args.report_to),
+        report_to=_trainer_report_to(args.report_to),
     )
 
 
 def train(args) -> None:
+    _disable_proxy_environment()
     output_dir = Path(args.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     set_seed(args.seed)
@@ -101,6 +176,10 @@ def train(args) -> None:
     data_args = data_config_from_args(args)
     data_module = make_data_module(processor, data_args)
     training_args = _training_args(args)
+    _init_swanlab_if_requested(args)
+    swanlab_enabled = any(
+        item.lower() == "swanlab" for item in _report_to(args.report_to)
+    )
 
     if args.eval_mode == "generation":
         if args.eval_strategy == "no":
@@ -120,15 +199,15 @@ def train(args) -> None:
             generation_eval_max_pixels=args.coco_eval_max_pixels or args.max_pixels,
             generation_eval_max_new_tokens=args.coco_eval_max_new_tokens,
             generation_eval_model_path=args.model_name_or_path,
+            swanlab_enabled=swanlab_enabled,
         )
     else:
-        from transformers import Trainer
-
-        trainer = Trainer(
+        trainer = TrainingTelemetryTrainer(
             model=model,
             processing_class=processor.tokenizer,
             args=training_args,
             **data_module,
+            swanlab_enabled=swanlab_enabled,
         )
 
     if args.resume_from_checkpoint:

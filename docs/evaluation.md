@@ -38,6 +38,12 @@ The model never receives the query answer. The SFT record does contain that
 answer, but `loss_mode=last_assistant` makes the collator supervise only the
 last assistant turn. Support answers are context, not training targets.
 
+COCO ground truth does not provide calibrated prediction confidence. Therefore
+SFT prompts and answers use only `bbox_2d` and `label`; they do not include a
+synthetic confidence target. Evaluation support answers keep that score-free
+format, while the final generation query explicitly asks the model to estimate a
+score for each predicted box.
+
 ## Metric definition
 
 For every shot count, predictions are filtered to the episode category. Greedy

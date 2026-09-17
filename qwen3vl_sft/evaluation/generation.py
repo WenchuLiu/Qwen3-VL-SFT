@@ -35,6 +35,10 @@ def load_episodes(path: str | Path) -> tuple[dict, list[dict]]:
         records = payload
     if not isinstance(records, list) or not records:
         raise ValueError(f"evaluation file contains no episodes: {path}")
+    if isinstance(metadata.get("query_annotations"), str):
+        metadata["query_annotations"] = _resolve_media_path(
+            metadata["query_annotations"], path.parent
+        )
     normalized_records = []
     for index, record in enumerate(records):
         if not isinstance(record, dict):
@@ -177,6 +181,7 @@ def evaluate_loaded_model(
     min_pixels: int,
     max_pixels: int,
     max_new_tokens: int,
+    coco_annotations_path: str | None = None,
 ) -> dict:
     responses = generate_responses(
         records,
@@ -188,7 +193,11 @@ def evaluate_loaded_model(
         max_pixels=max_pixels,
         max_new_tokens=max_new_tokens,
     )
-    return evaluate_episode_predictions(records, responses)
+    return evaluate_episode_predictions(
+        records,
+        responses,
+        coco_annotations_path=coco_annotations_path,
+    )
 
 
 def result_payload(
@@ -202,6 +211,7 @@ def result_payload(
     min_pixels: int,
     max_pixels: int,
     max_new_tokens: int,
+    coco_annotations_path: str | None = None,
     runtime_seconds: float | None = None,
 ) -> dict:
     episodes_file = Path(episodes_path)
@@ -222,6 +232,7 @@ def result_payload(
         "min_pixels": min_pixels,
         "max_pixels": max_pixels,
         "max_new_tokens": max_new_tokens,
+        "coco_annotations_path": coco_annotations_path,
         "runtime_seconds": runtime_seconds,
         **result,
     }
@@ -254,7 +265,8 @@ def evaluate_checkpoint(
 
         model = PeftModel.from_pretrained(model, adapter_path, is_trainable=False)
     processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
-    _, records = load_episodes(episodes_path)
+    metadata, records = load_episodes(episodes_path)
+    coco_annotations_path = metadata.get("query_annotations")
     started = time.monotonic()
     result = evaluate_loaded_model(
         records,
@@ -265,6 +277,7 @@ def evaluate_checkpoint(
         min_pixels=min_pixels,
         max_pixels=max_pixels,
         max_new_tokens=max_new_tokens,
+        coco_annotations_path=coco_annotations_path,
     )
     return result_payload(
         result,
@@ -276,5 +289,6 @@ def evaluate_checkpoint(
         min_pixels=min_pixels,
         max_pixels=max_pixels,
         max_new_tokens=max_new_tokens,
+        coco_annotations_path=coco_annotations_path,
         runtime_seconds=time.monotonic() - started,
     )

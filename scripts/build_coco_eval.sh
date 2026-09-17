@@ -10,7 +10,7 @@ SUPPORT_IMAGE_IDS="${SUPPORT_IMAGE_IDS:-${ROOT_DIR}/data/coco/train_image_ids.js
 QUERY_ANNOTATIONS="${QUERY_ANNOTATIONS:-${COCO_ROOT}/annotations/instances_val2017.json}"
 QUERY_IMAGE_ROOT="${QUERY_IMAGE_ROOT:-${COCO_ROOT}/val2017}"
 OUTPUT="${OUTPUT:-${ROOT_DIR}/data/coco/val_episodes.json}"
-SHOTS="${SHOTS:-1}"
+SHOTS="${SHOTS:-0 1 2 4}"
 NUM_QUERY_IMAGES="${NUM_QUERY_IMAGES:-500}"
 SEED="${SEED:-43}"
 

@@ -9,13 +9,22 @@ env/
 .env
 
 # Local datasets, model weights, caches, and experiment outputs.
-/data/
-/models/
-/weights/
-/cache/
-/runs/
-/outputs/
-/wandb/
+/data
+/models
+/weights
+/cache
+/runs
+/outputs
+/wandb
+/swanlog
+
+# Training logs and locally generated model artifacts.
+*.log
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.bin
 
 # Editor and OS files.
 .DS_Store

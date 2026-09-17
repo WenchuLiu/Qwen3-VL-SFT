@@ -2,9 +2,10 @@ import json
 import unittest
 
 from qwen3vl_sft.evaluation.coco_protocol import (
+    EVAL_SYSTEM_PROMPT,
     LOSS_MODE,
     PROMPT_TEMPLATE_VERSION,
-    SYSTEM_PROMPT,
+    TRAIN_SYSTEM_PROMPT,
     build_eval_messages,
     build_sft_record,
 )
@@ -28,7 +29,10 @@ def episode():
 
 
 class ProtocolTest(unittest.TestCase):
-    def test_sft_and_generation_use_the_same_protocol_prompt(self):
+    def test_inst_v4_is_the_default_prompt_protocol(self):
+        self.assertEqual(PROMPT_TEMPLATE_VERSION, "inst-v4")
+
+    def test_sft_omits_confidence_and_eval_requests_it(self):
         value = episode()
         record = build_sft_record(
             record_id=value["id"],
@@ -39,14 +43,21 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(record["loss_mode"], LOSS_MODE)
         self.assertEqual(record["num_shots"], 1)
         self.assertEqual(record["image"], ["/tmp/support.jpg", "/tmp/query.jpg"])
-        self.assertEqual(record["conversations"][0], {"from": "system", "value": SYSTEM_PROMPT})
+        self.assertEqual(
+            record["conversations"][0],
+            {"from": "system", "value": TRAIN_SYSTEM_PROMPT},
+        )
         self.assertTrue(record["conversations"][1]["value"].startswith("<image>\nLocate"))
         self.assertTrue(record["conversations"][3]["value"].startswith("<image>\nUsing the preceding"))
+        self.assertNotIn("score", json.dumps(record["conversations"]))
 
         messages = build_eval_messages(value, min_pixels=3136, max_pixels=640000)
         self.assertEqual([message["role"] for message in messages], ["system", "user", "assistant", "user"])
+        self.assertEqual(messages[0]["content"][0]["text"], EVAL_SYSTEM_PROMPT)
         self.assertEqual(messages[1]["content"][1]["text"], record["conversations"][1]["value"][len("<image>\n"):])
-        self.assertEqual(messages[3]["content"][1]["text"], record["conversations"][3]["value"][len("<image>\n"):])
+        self.assertNotIn("score", messages[2]["content"][0]["text"])
+        self.assertIn('"score":0.95', messages[3]["content"][1]["text"])
+        self.assertIn("descending confidence", messages[3]["content"][1]["text"])
         self.assertNotIn("600", json.dumps(messages[-1]))
 
     def test_zero_shot_generation_keeps_the_same_query_protocol(self):
