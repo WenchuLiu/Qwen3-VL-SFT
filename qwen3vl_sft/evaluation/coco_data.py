@@ -14,13 +14,32 @@ from .coco_protocol import PROTOCOL_NAME, PROMPT_TEMPLATE_VERSION, build_sft_rec
 
 @dataclass(frozen=True)
 class CocoFrame:
-    image_id: int
+    # COCO-compatible datasets are allowed to use string image IDs.  ArTaxOr,
+    # for example, uses hashes while the other local datasets use integers.
+    image_id: int | str
     category_id: int
     category: str
     image_path: str
     boxes: tuple[tuple[int, int, int, int], ...]
     width: int = 1000
     height: int = 1000
+
+
+def _identifier(value: object) -> int | str:
+    """Keep COCO identifiers stable while accepting numeric JSON values."""
+    if isinstance(value, bool):
+        raise ValueError("boolean values are not valid COCO identifiers")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value:
+        return value
+    raise ValueError(f"unsupported COCO identifier: {value!r}")
+
+
+def _identifier_sort_key(value: int | str) -> tuple[int, object]:
+    if isinstance(value, int):
+        return (0, value)
+    return (1, value)
 
 
 def _xywh_to_normalized(
@@ -54,7 +73,7 @@ def load_coco_frames(
     *,
     min_box_area_ratio: float = 0.001,
     verify_images: bool = True,
-    image_ids: Iterable[int] | None = None,
+    image_ids: Iterable[int | str] | None = None,
 ) -> dict[str, list[CocoFrame]]:
     """Group usable COCO boxes by category and image.
 
@@ -70,19 +89,24 @@ def load_coco_frames(
     if not isinstance(coco, dict):
         raise ValueError(f"COCO annotations must be a JSON object: {annotation_path}")
 
-    selected_ids = {int(value) for value in image_ids} if image_ids is not None else None
-    images = {int(image["id"]): image for image in coco.get("images", [])}
+    selected_ids = (
+        {_identifier(value) for value in image_ids} if image_ids is not None else None
+    )
+    images = {
+        _identifier(image["id"]): image
+        for image in coco.get("images", [])
+    }
     categories = {
         int(category["id"]): str(category["name"])
         for category in coco.get("categories", [])
     }
-    grouped: dict[tuple[int, int], list[tuple[int, int, int, int]]] = defaultdict(list)
+    grouped: dict[tuple[int | str, int], list[tuple[int, int, int, int]]] = defaultdict(list)
 
     for annotation in coco.get("annotations", []):
         if annotation.get("iscrowd", 0):
             continue
         try:
-            image_id = int(annotation["image_id"])
+            image_id = _identifier(annotation["image_id"])
             category_id = int(annotation["category_id"])
         except (KeyError, TypeError, ValueError):
             continue
@@ -127,30 +151,36 @@ def load_coco_frames(
             )
         )
     for frames in result.values():
-        frames.sort(key=lambda frame: frame.image_id)
+        frames.sort(key=lambda frame: _identifier_sort_key(frame.image_id))
     return dict(result)
 
 
-def select_image_ids(annotations_path: str | Path, fraction: float, seed: int) -> list[int]:
+def select_image_ids(
+    annotations_path: str | Path, fraction: float, seed: int
+) -> list[int | str]:
     if not 0 < fraction <= 1:
         raise ValueError("fraction must be in (0, 1]")
     with Path(annotations_path).open("r", encoding="utf-8") as handle:
         coco = json.load(handle)
-    image_ids = sorted(int(image["id"]) for image in coco.get("images", []))
+    image_ids = [
+        _identifier(image["id"])
+        for image in coco.get("images", [])
+    ]
+    image_ids.sort(key=_identifier_sort_key)
     if fraction == 1:
         return image_ids
     count = max(1, round(len(image_ids) * fraction))
     return sorted(random.Random(seed).sample(image_ids, count))
 
 
-def read_image_ids(path: str | Path) -> set[int]:
+def read_image_ids(path: str | Path) -> set[int | str]:
     with Path(path).open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
     if isinstance(payload, dict):
         payload = payload.get("image_ids")
     if not isinstance(payload, list):
         raise ValueError(f"expected a list of image IDs in {path}")
-    return {int(value) for value in payload}
+    return {_identifier(value) for value in payload}
 
 
 def parse_shots(values: Sequence[str], *, allow_zero: bool = False) -> list[int]:
@@ -255,26 +285,65 @@ def build_eval_records(
     seed: int,
     num_query_images: int | None = 500,
     num_samples: int | None = None,
+    all_query_pairs: bool = False,
 ) -> list[dict]:
     """Build fixed, support/query-disjoint evaluation episodes."""
     if not shots or any(shot < 0 for shot in shots):
         raise ValueError("evaluation shot counts must be non-negative")
-    if num_query_images is not None and num_query_images < 1:
+    if not all_query_pairs and num_query_images is not None and num_query_images < 1:
         raise ValueError("num_query_images must be positive")
-    if num_query_images is None and (num_samples is None or num_samples < 1):
+    if (
+        not all_query_pairs
+        and num_query_images is None
+        and (num_samples is None or num_samples < 1)
+    ):
         raise ValueError("num_samples must be positive when num_query_images is unset")
 
     categories = sorted(
         category for category in set(support_frames) & set(query_frames)
-        if len(support_frames[category]) >= max(shots) and query_frames[category]
+        if (
+            query_frames[category]
+            and (
+                len(support_frames[category]) >= max(shots)
+                or (all_query_pairs and support_frames[category])
+            )
+        )
     )
     if not categories:
         raise ValueError("no category has enough support and query frames")
 
     rng = random.Random(seed)
     records: list[dict] = []
+    if all_query_pairs:
+        candidates = [
+            (category, frame)
+            for category in categories
+            for frame in query_frames[category]
+        ]
+        for index, (category, query) in enumerate(candidates):
+            shot = shots[index % len(shots)]
+            support_count = min(shot, len(support_frames[category]))
+            support = _sample_support(
+                support_frames[category],
+                query,
+                support_count,
+                rng,
+            )
+            records.append(
+                {
+                    "id": f"coco_eval_{index:07d}",
+                    "protocol": PROTOCOL_NAME,
+                    "prompt_template_version": PROMPT_TEMPLATE_VERSION,
+                    "category": category,
+                    "num_shots": shot,
+                    "support": [_frame_record(frame) for frame in support],
+                    "query": _frame_record(query),
+                }
+            )
+        return records
+
     if num_query_images is not None:
-        options_by_image: dict[int, list[tuple[str, CocoFrame]]] = defaultdict(list)
+        options_by_image: dict[int | str, list[tuple[str, CocoFrame]]] = defaultdict(list)
         for category in categories:
             for frame in query_frames[category]:
                 options_by_image[frame.image_id].append((category, frame))
@@ -320,6 +389,52 @@ def build_eval_records(
                 "query": _frame_record(query),
             }
         )
+    return records
+
+
+def build_fixed_support_eval_records(
+    support_frames: Mapping[str, Sequence[CocoFrame]],
+    query_frames: Mapping[str, Sequence[CocoFrame]],
+    *,
+    shot: int,
+) -> list[dict]:
+    """Build class-wise positive episodes from a prepared support file.
+
+    The local few-shot datasets already provide fixed ``1_shot.json``,
+    ``2_shot.json`` and ``4_shot.json`` support annotations.  Preserve their
+    order and use every available support image up to ``shot``.  Some source
+    files contain multiple boxes from one image, so a nominal 4-shot file can
+    have only three distinct support images for a category; retaining that
+    category matches the original baseline's behavior instead of silently
+    dropping query images.
+    """
+    if shot < 0:
+        raise ValueError("shot count must be non-negative")
+    categories = sorted(
+        category
+        for category in set(support_frames) & set(query_frames)
+        if support_frames[category] or shot == 0
+    )
+    if not categories:
+        raise ValueError("no category has support and query frames")
+
+    records: list[dict] = []
+    record_index = 0
+    for category in categories:
+        support = list(support_frames.get(category, ()))[:shot]
+        for query in query_frames[category]:
+            records.append(
+                {
+                    "id": f"coco_eval_{record_index:07d}",
+                    "protocol": PROTOCOL_NAME,
+                    "prompt_template_version": PROMPT_TEMPLATE_VERSION,
+                    "category": category,
+                    "num_shots": shot,
+                    "support": [_frame_record(frame) for frame in support],
+                    "query": _frame_record(query),
+                }
+            )
+            record_index += 1
     return records
 
 

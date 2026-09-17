@@ -184,6 +184,29 @@ OUTPUT=runs/adapter.json \
 bash scripts/evaluate_coco.sh
 ```
 
+## Local few-shot benchmark
+
+The bundled launcher evaluates the original local 4B checkpoint on ArTaxOr,
+Clipart1k, FISH, NEU-DET, and UODD at 0/1/2/4-shot. It uses each dataset's
+fixed `annotations/{1,2,4}_shot.json` support file and evaluates every positive
+test image/category pair with official COCO mAP:
+
+```bash
+CKPT=weights/Qwen3-VL-4B-Instruct \
+  bash scripts/evaluate_fewshot.sh
+```
+
+The launcher defaults to two persistent GPU workers (`cuda:0` and `cuda:1`),
+each with its own 4B model replica. Override with `NUM_GPUS=1` when only one
+GPU is available.
+
+Results follow an MMDetection-style layout under
+`work_dirs/qwen3-vl-4b-base-fewshot/`: `evaluation.log`, `config.json`,
+`summary.json`, and one `episodes.json` plus `result.json` per dataset/shot.
+Use `SKIP_EXISTING=1` to resume completed entries. The main metric is
+`map_50_95`; `map_50`, `map_75`, ranking-mAP, raw responses, and parsed
+predictions are retained in each result file.
+
 The complete base-before/adapter-after workflow is available as:
 
 ```bash

@@ -6,7 +6,7 @@ import json
 import hashlib
 import time
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 import torch
 
@@ -90,6 +90,7 @@ def generate_responses(
     min_pixels: int,
     max_pixels: int,
     max_new_tokens: int,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> list[str]:
     """Generate deterministic responses for fixed episodes."""
     if batch_size < 1 or max_new_tokens < 1:
@@ -163,6 +164,8 @@ def generate_responses(
                     clean_up_tokenization_spaces=False,
                 )
             )
+            if progress_callback is not None:
+                progress_callback(min(start + len(batch), len(records)), len(records))
     finally:
         for name, value in original_generation_values.items():
             setattr(generation_config, name, value)

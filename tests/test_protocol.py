@@ -29,8 +29,8 @@ def episode():
 
 
 class ProtocolTest(unittest.TestCase):
-    def test_inst_v4_is_the_default_prompt_protocol(self):
-        self.assertEqual(PROMPT_TEMPLATE_VERSION, "inst-v4")
+    def test_inst_v5_is_the_default_prompt_protocol(self):
+        self.assertEqual(PROMPT_TEMPLATE_VERSION, "inst-v5")
 
     def test_sft_omits_confidence_and_eval_requests_it(self):
         value = episode()
@@ -50,6 +50,7 @@ class ProtocolTest(unittest.TestCase):
         self.assertTrue(record["conversations"][1]["value"].startswith("<image>\nLocate"))
         self.assertTrue(record["conversations"][3]["value"].startswith("<image>\nUsing the preceding"))
         self.assertNotIn("score", json.dumps(record["conversations"]))
+        self.assertNotIn("20 detections", json.dumps(record["conversations"]))
 
         messages = build_eval_messages(value, min_pixels=3136, max_pixels=640000)
         self.assertEqual([message["role"] for message in messages], ["system", "user", "assistant", "user"])
@@ -59,6 +60,7 @@ class ProtocolTest(unittest.TestCase):
         self.assertIn('"score":0.95', messages[3]["content"][1]["text"])
         self.assertIn("descending confidence", messages[3]["content"][1]["text"])
         self.assertNotIn("600", json.dumps(messages[-1]))
+        self.assertNotIn("20 detections", json.dumps(messages))
 
     def test_zero_shot_generation_keeps_the_same_query_protocol(self):
         value = episode()

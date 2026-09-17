@@ -72,6 +72,11 @@ def parse_args() -> argparse.Namespace:
     evaluation.add_argument("--shots", nargs="+", default=["1"])
     evaluation.add_argument("--seed", type=int, default=43)
     evaluation.add_argument("--min-box-area-ratio", type=float, default=0.001)
+    evaluation.add_argument(
+        "--all-query-pairs",
+        action="store_true",
+        help="Build one episode for every query image/category pair.",
+    )
     return parser.parse_args()
 
 
@@ -151,6 +156,7 @@ def build_eval(args: argparse.Namespace) -> None:
         seed=args.seed,
         num_query_images=num_query_images,
         num_samples=args.num_samples,
+        all_query_pairs=args.all_query_pairs,
     )
     write_json(
         args.output,

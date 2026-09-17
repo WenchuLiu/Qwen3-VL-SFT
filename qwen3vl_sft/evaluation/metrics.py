@@ -214,6 +214,19 @@ COCO_STAT_NAMES = (
 )
 
 
+def _coco_identifier(value: object) -> int | str:
+    """Accept the numeric and string image IDs used by COCO-style datasets."""
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ValueError(f"unsupported COCO image identifier: {value!r}")
+    return value
+
+
+def _coco_identifier_sort_key(value: int | str) -> tuple[int, object]:
+    if isinstance(value, int):
+        return (0, value)
+    return (1, value)
+
+
 def _empty_coco_metrics() -> dict[str, object]:
     return {"stats": [0.0] * len(COCO_STAT_NAMES), **dict.fromkeys(COCO_STAT_NAMES, 0.0)}
 
@@ -349,13 +362,13 @@ def _coco_metrics(
         raise FileNotFoundError(f"COCO query annotations not found: {annotation_path}")
 
     coco_gt = COCO(str(annotation_path))
-    task_pairs: set[tuple[int, int]] = set()
-    task_image_ids: set[int] = set()
+    task_pairs: set[tuple[int | str, int]] = set()
+    task_image_ids: set[int | str] = set()
     task_category_ids: set[int] = set()
     for episode in episodes:
         query = episode["query"]
         try:
-            image_id = int(query["image_id"])
+            image_id = _coco_identifier(query["image_id"])
             category_id = int(query["category_id"])
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError(
@@ -369,11 +382,17 @@ def _coco_metrics(
         task_image_ids.add(image_id)
         task_category_ids.add(category_id)
 
-    images = [coco_gt.imgs[image_id] for image_id in sorted(task_image_ids)]
+    images = [
+        coco_gt.imgs[image_id]
+        for image_id in sorted(task_image_ids, key=_coco_identifier_sort_key)
+    ]
     annotations = [
         annotation
         for annotation in coco_gt.dataset.get("annotations", [])
-        if (int(annotation["image_id"]), int(annotation["category_id"])) in task_pairs
+        if (
+            _coco_identifier(annotation["image_id"]),
+            int(annotation["category_id"]),
+        ) in task_pairs
     ]
     categories = [coco_gt.cats[category_id] for category_id in sorted(task_category_ids)]
     detections = []
@@ -390,7 +409,7 @@ def _coco_metrics(
     for episode, response in zip(episodes, responses):
         category = str(episode["category"])
         query = episode["query"]
-        image_id = int(query["image_id"])
+        image_id = _coco_identifier(query["image_id"])
         category_id = int(query["category_id"])
         width = int(query.get("width", 1000))
         height = int(query.get("height", 1000))
@@ -433,7 +452,10 @@ def _coco_metrics(
         coco_gt_subset.createIndex()
         coco_dt = coco_gt_subset.loadRes(detections)
         evaluator = COCOeval(coco_gt_subset, coco_dt, "bbox")
-        evaluator.params.imgIds = sorted(task_image_ids)
+        evaluator.params.imgIds = sorted(
+            task_image_ids,
+            key=_coco_identifier_sort_key,
+        )
         evaluator.params.catIds = sorted(task_category_ids)
         evaluator.evaluate()
         evaluator.accumulate()

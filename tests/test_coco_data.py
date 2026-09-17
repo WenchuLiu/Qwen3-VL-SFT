@@ -8,6 +8,7 @@ from pathlib import Path
 from qwen3vl_sft.evaluation.coco_data import (
     CocoFrame,
     build_eval_records,
+    build_fixed_support_eval_records,
     build_train_records,
     load_coco_frames,
 )
@@ -43,6 +44,21 @@ class CocoDataTest(unittest.TestCase):
         self.assertEqual(len({record["query"]["image_id"] for record in records}), 4)
         self.assertEqual({record["num_shots"] for record in records}, {1, 2})
         self.assertTrue(all(record["protocol"] == "positive_category_conditioned_icl" for record in records))
+
+    def test_fixed_support_builder_keeps_short_support_categories(self):
+        support = {
+            "widget": frames("support", count=3),
+            "gadget": frames("gadget", count=4),
+        }
+        query = {
+            "widget": frames("widget-query", count=2),
+            "gadget": frames("gadget-query", count=1),
+        }
+        records = build_fixed_support_eval_records(support, query, shot=4)
+        self.assertEqual(len(records), 3)
+        self.assertEqual({record["category"] for record in records}, {"widget", "gadget"})
+        self.assertEqual({len(record["support"]) for record in records}, {3, 4})
+        self.assertEqual(len({record["id"] for record in records}), len(records))
 
     def test_coco_json_loader_and_cli_builder(self):
         with tempfile.TemporaryDirectory() as temporary:

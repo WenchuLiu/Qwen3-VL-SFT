@@ -1,0 +1,593 @@
+#!/usr/bin/env python3
+"""Evaluate the base Qwen3-VL model on the local few-shot detection datasets.
+
+Each dataset's ``annotations/{1,2,4}_shot.json`` file is used as the support
+pool and ``annotations/test.json`` is used as the query set.  Evaluation builds
+one category-conditioned episode for every query image/category pair, writes a
+reusable manifest, and stores the generation result under a per-dataset,
+per-shot work directory.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import multiprocessing as mp
+import queue
+import sys
+import time
+import traceback
+from pathlib import Path
+
+import torch
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from qwen3vl_sft.config import DEFAULT_MAX_PIXELS, DEFAULT_MIN_PIXELS
+from qwen3vl_sft.evaluation.coco_data import (
+    build_fixed_support_eval_records,
+    load_coco_frames,
+    parse_shots,
+    write_json,
+)
+from qwen3vl_sft.evaluation.coco_protocol import PROTOCOL_NAME, PROMPT_TEMPLATE_VERSION
+from qwen3vl_sft.evaluation.generation import (
+    generate_responses,
+    load_episodes,
+    result_payload,
+)
+from qwen3vl_sft.evaluation.metrics import evaluate_episode_predictions
+
+
+DATASET_DIRS = {
+    "ArTaxOr": "ArTaxOr",
+    "Clipart1k": "clipart1k",
+    "FISH": "FISH",
+    "NEU-DET": "NEU-DET",
+    "UODD": "UODD",
+    "DIOR": "VISUALDIOR",
+    "VISUALDIOR": "VISUALDIOR",
+}
+DEFAULT_DATASETS = tuple(DATASET_DIRS)
+
+
+def _dataset_dir(data_root: Path, name: str) -> tuple[str, Path]:
+    if name in DATASET_DIRS:
+        display_name = name
+        directory = data_root / DATASET_DIRS[name]
+    else:
+        matches = {
+            key.lower(): key
+            for key in DATASET_DIRS
+        }
+        canonical = matches.get(name.lower())
+        if canonical is None:
+            valid = ", ".join(DATASET_DIRS)
+            raise ValueError(f"unknown dataset {name!r}; choose from: {valid}")
+        display_name = canonical
+        directory = data_root / DATASET_DIRS[canonical]
+    if not directory.is_dir():
+        raise NotADirectoryError(f"dataset directory not found: {directory}")
+    return display_name, directory
+
+
+def _dataset_image_roots(dataset_dir: Path) -> tuple[Path, Path]:
+    """Resolve train/query image roots for both local dataset layouts."""
+    support_root = dataset_dir / "new_train"
+    query_root = dataset_dir / "new_test"
+    if not support_root.is_dir():
+        support_root = dataset_dir / "train"
+    if not query_root.is_dir():
+        query_root = dataset_dir / "test"
+    return support_root, query_root
+
+
+def _load_model(model_path: str, device: str, attention: str):
+    from transformers import AutoModelForImageTextToText, AutoProcessor
+
+    dtype = torch.bfloat16 if str(device).startswith("cuda") else torch.float32
+    model = AutoModelForImageTextToText.from_pretrained(
+        model_path,
+        dtype=dtype,
+        device_map=device,
+        attn_implementation=attention,
+        trust_remote_code=True,
+    )
+    processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+    return model, processor
+
+
+def _result_is_complete(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return bool(payload.get("metrics_by_shot")) and "predictions" in payload
+
+
+def _generation_worker_loop(
+    rank: int,
+    device: str,
+    model_path: str,
+    attention: str,
+    task_queue,
+    result_queue,
+    batch_size: int,
+    min_pixels: int,
+    max_pixels: int,
+    max_new_tokens: int,
+) -> None:
+    """Load one model replica and process generation tasks until shutdown."""
+    try:
+        print(f"[GPU {device}] loading model replica", flush=True)
+        model, processor = _load_model(model_path, device, attention)
+        print(f"[GPU {device}] model ready", flush=True)
+
+        while True:
+            item = task_queue.get()
+            if item is None:
+                return
+            task_id, records = item
+
+            def report_progress(done: int, total: int) -> None:
+                if done == total or done % 100 == 0:
+                    print(
+                        f"[GPU {device}] task={task_id} {done}/{total}",
+                        flush=True,
+                    )
+
+            responses = generate_responses(
+                records,
+                model,
+                processor,
+                device,
+                batch_size=batch_size,
+                min_pixels=min_pixels,
+                max_pixels=max_pixels,
+                max_new_tokens=max_new_tokens,
+                progress_callback=report_progress,
+            )
+            result_queue.put((rank, task_id, responses, None))
+    except BaseException:
+        result_queue.put((rank, None, None, traceback.format_exc()))
+
+
+class GenerationRunner:
+    """Run generation on one model or on persistent replicas across GPUs."""
+
+    def __init__(
+        self,
+        *,
+        model_path: str,
+        device: str,
+        num_gpus: int,
+        attention: str,
+        batch_size: int,
+        min_pixels: int,
+        max_pixels: int,
+        max_new_tokens: int,
+    ) -> None:
+        if num_gpus < 1:
+            raise ValueError("num_gpus must be positive")
+        self.model_path = model_path
+        self.attention = attention
+        self.batch_size = batch_size
+        self.min_pixels = min_pixels
+        self.max_pixels = max_pixels
+        self.max_new_tokens = max_new_tokens
+        self.task_id = 0
+        self.parallel = num_gpus > 1
+        self.model = None
+        self.processor = None
+        self.processes = []
+        self.task_queues = []
+        self.result_queue = None
+
+        if not self.parallel:
+            print(f"[GPU {device}] loading model replica", flush=True)
+            self.model, self.processor = _load_model(model_path, device, attention)
+            print(f"[GPU {device}] model ready", flush=True)
+            self.devices = [device]
+            return
+
+        if not torch.cuda.is_available():
+            raise RuntimeError("--num-gpus > 1 requires CUDA")
+        available = torch.cuda.device_count()
+        if available < num_gpus:
+            raise RuntimeError(
+                f"requested {num_gpus} GPUs, but only {available} are visible"
+            )
+        self.devices = [f"cuda:{index}" for index in range(num_gpus)]
+        context = mp.get_context("spawn")
+        self.result_queue = context.Queue()
+        for rank, worker_device in enumerate(self.devices):
+            task_queue = context.Queue()
+            process = context.Process(
+                target=_generation_worker_loop,
+                args=(
+                    rank,
+                    worker_device,
+                    model_path,
+                    attention,
+                    task_queue,
+                    self.result_queue,
+                    batch_size,
+                    min_pixels,
+                    max_pixels,
+                    max_new_tokens,
+                ),
+            )
+            process.start()
+            self.task_queues.append(task_queue)
+            self.processes.append(process)
+        print(f"Started {num_gpus} persistent GPU workers: {self.devices}", flush=True)
+
+    @property
+    def device_label(self) -> str:
+        return ",".join(self.devices)
+
+    def generate(self, records: list[dict]) -> list[str]:
+        if not self.parallel:
+            return generate_responses(
+                records,
+                self.model,
+                self.processor,
+                self.devices[0],
+                batch_size=self.batch_size,
+                min_pixels=self.min_pixels,
+                max_pixels=self.max_pixels,
+                max_new_tokens=self.max_new_tokens,
+            )
+
+        task_id = self.task_id
+        self.task_id += 1
+        chunks = [records[rank::len(self.processes)] for rank in range(len(self.processes))]
+        for task_queue, chunk in zip(self.task_queues, chunks):
+            task_queue.put((task_id, chunk))
+
+        responses_by_rank: dict[int, list[str]] = {}
+        while len(responses_by_rank) < len(self.processes):
+            try:
+                rank, returned_task_id, responses, error = self.result_queue.get(timeout=5)
+            except queue.Empty:
+                if any(not process.is_alive() for process in self.processes):
+                    self.close(terminate=True)
+                    raise RuntimeError("a GPU worker exited without returning results")
+                continue
+            if error is not None:
+                self.close(terminate=True)
+                raise RuntimeError(f"GPU worker {rank} failed:\n{error}")
+            if returned_task_id != task_id:
+                self.close(terminate=True)
+                raise RuntimeError(
+                    f"worker {rank} returned task {returned_task_id}, expected {task_id}"
+                )
+            responses_by_rank[rank] = responses
+
+        combined: list[str] = [""] * len(records)
+        for rank, responses in responses_by_rank.items():
+            for index, response in zip(range(rank, len(records), len(self.processes)), responses):
+                combined[index] = response
+        return combined
+
+    def close(self, *, terminate: bool = False) -> None:
+        if not self.parallel:
+            self.model = None
+            self.processor = None
+            return
+        if not terminate:
+            for task_queue in self.task_queues:
+                task_queue.put(None)
+        else:
+            for process in self.processes:
+                if process.is_alive():
+                    process.terminate()
+        for process in self.processes:
+            process.join(timeout=30)
+        for process in self.processes:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5)
+        for task_queue in self.task_queues:
+            task_queue.close()
+        if self.result_queue is not None:
+            self.result_queue.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback_value):
+        self.close(terminate=exc_type is not None)
+
+
+def _build_manifest(
+    *,
+    dataset_name: str,
+    dataset_dir: Path,
+    shot: int,
+    output: Path,
+    seed: int,
+    min_box_area_ratio: float,
+    max_query_pairs: int | None = None,
+) -> None:
+    annotations_dir = dataset_dir / "annotations"
+    support_annotation = annotations_dir / (
+        "1_shot.json" if shot == 0 else f"{shot}_shot.json"
+    )
+    query_annotation = annotations_dir / "test.json"
+    support_image_root, query_image_root = _dataset_image_roots(dataset_dir)
+    for path in (
+        support_annotation,
+        query_annotation,
+        support_image_root,
+        query_image_root,
+    ):
+        if not path.exists():
+            raise FileNotFoundError(path)
+
+    support_frames = load_coco_frames(
+        support_annotation,
+        support_image_root,
+        min_box_area_ratio=min_box_area_ratio,
+    )
+    query_frames = load_coco_frames(
+        query_annotation,
+        query_image_root,
+        min_box_area_ratio=min_box_area_ratio,
+    )
+    records = build_fixed_support_eval_records(
+        support_frames,
+        query_frames,
+        shot=shot,
+    )
+    if max_query_pairs is not None:
+        records = records[:max_query_pairs]
+    write_json(
+        output,
+        {
+            "protocol": PROTOCOL_NAME,
+            "prompt_template_version": PROMPT_TEMPLATE_VERSION,
+            "dataset": dataset_name,
+            "support_annotations": str(support_annotation.resolve()),
+            "query_annotations": str(query_annotation.resolve()),
+            "support_image_root": str(support_image_root.resolve()),
+            "query_image_root": str(query_image_root.resolve()),
+            "shots": [shot],
+            "seed": seed,
+            "min_box_area_ratio": min_box_area_ratio,
+            "all_query_pairs": True,
+            "max_query_pairs": max_query_pairs,
+            "records": records,
+        },
+    )
+    print(f"[{dataset_name} {shot}-shot] built {len(records)} episodes: {output}", flush=True)
+
+
+def _evaluate_one(
+    *,
+    runner: GenerationRunner,
+    model_path: str,
+    dataset_name: str,
+    manifest: Path,
+    result_path: Path,
+    batch_size: int,
+    min_pixels: int,
+    max_pixels: int,
+    max_new_tokens: int,
+    attention: str,
+) -> dict:
+    metadata, records = load_episodes(manifest)
+    started = time.monotonic()
+    responses = runner.generate(records)
+    result = evaluate_episode_predictions(
+        records,
+        responses,
+        coco_annotations_path=metadata.get("query_annotations"),
+    )
+    payload = result_payload(
+        result,
+        model_path=model_path,
+        adapter_path=None,
+        episodes_path=str(manifest.resolve()),
+        device=runner.device_label,
+        batch_size=batch_size,
+        min_pixels=min_pixels,
+        max_pixels=max_pixels,
+        max_new_tokens=max_new_tokens,
+        coco_annotations_path=metadata.get("query_annotations"),
+        runtime_seconds=time.monotonic() - started,
+    )
+    payload.update(
+        {
+            "dataset": dataset_name,
+            "attention": attention,
+            "support_annotations": metadata.get("support_annotations"),
+            "query_annotations": metadata.get("query_annotations"),
+        }
+    )
+    write_json(result_path, payload)
+    return payload
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--model-path", required=True)
+    parser.add_argument("--data-root", type=Path, default=ROOT / "data")
+    parser.add_argument(
+        "--work-dir",
+        type=Path,
+        default=ROOT / "work_dirs" / "qwen3-vl-4b-base-fewshot",
+    )
+    parser.add_argument("--datasets", nargs="+", default=list(DEFAULT_DATASETS))
+    parser.add_argument("--shots", nargs="+", default=["0", "1", "2", "4"])
+    parser.add_argument("--seed", type=int, default=43)
+    parser.add_argument("--device", default="cuda:0")
+    parser.add_argument(
+        "--num-gpus",
+        type=int,
+        default=1,
+        help="Number of persistent model replicas; replicas use cuda:0..N-1.",
+    )
+    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--min-pixels", type=int, default=DEFAULT_MIN_PIXELS)
+    parser.add_argument("--max-pixels", type=int, default=DEFAULT_MAX_PIXELS)
+    parser.add_argument("--max-new-tokens", type=int, default=256)
+    parser.add_argument(
+        "--min-box-area-ratio",
+        type=float,
+        default=0.0,
+        help="Keep all annotated boxes by default; set >0 to filter tiny boxes.",
+    )
+    parser.add_argument(
+        "--attention",
+        choices=("sdpa", "flash_attention_2", "eager"),
+        default="sdpa",
+    )
+    parser.add_argument(
+        "--max-query-pairs",
+        type=int,
+        default=None,
+        help="Optional positive query-pair limit for smoke tests.",
+    )
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Skip a dataset/shot when its result.json is already complete.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    if args.batch_size < 1 or args.max_new_tokens < 1:
+        raise ValueError("batch size and max new tokens must be positive")
+    if args.num_gpus < 1:
+        raise ValueError("num gpus must be positive")
+    if args.min_box_area_ratio < 0 or args.min_box_area_ratio >= 1:
+        raise ValueError("min box area ratio must be in [0, 1)")
+    if args.max_query_pairs is not None and args.max_query_pairs < 1:
+        raise ValueError("max query pairs must be positive")
+    shots = parse_shots([str(value) for value in args.shots], allow_zero=True)
+    work_dir = args.work_dir.expanduser().resolve()
+    data_root = args.data_root.expanduser().resolve()
+    model_path = str(Path(args.model_path).expanduser().resolve()) if Path(args.model_path).exists() else args.model_path
+
+    datasets = [_dataset_dir(data_root, name) for name in args.datasets]
+    tasks = []
+    for dataset_name, dataset_dir in datasets:
+        for shot in shots:
+            shot_dir = work_dir / dataset_name / f"{shot}shot"
+            tasks.append(
+                {
+                    "dataset": dataset_name,
+                    "dataset_dir": dataset_dir,
+                    "shot": shot,
+                    "manifest": shot_dir / "episodes.json",
+                    "result": shot_dir / "result.json",
+                }
+            )
+
+    write_json(
+        work_dir / "config.json",
+        {
+            "model_path": model_path,
+            "data_root": str(data_root),
+            "work_dir": str(work_dir),
+            "datasets": [name for name, _ in datasets],
+            "shots": shots,
+            "seed": args.seed,
+            "device": args.device,
+            "num_gpus": args.num_gpus,
+            "batch_size": args.batch_size,
+            "min_pixels": args.min_pixels,
+            "max_pixels": args.max_pixels,
+            "max_new_tokens": args.max_new_tokens,
+            "min_box_area_ratio": args.min_box_area_ratio,
+            "attention": args.attention,
+            "all_query_pairs": True,
+            "max_query_pairs": args.max_query_pairs,
+        },
+    )
+
+    pending = [
+        task
+        for task in tasks
+        if not args.skip_existing or not _result_is_complete(task["result"])
+    ]
+    if not pending:
+        print(f"All requested results already exist under {work_dir}")
+        return
+
+    summary_rows = []
+    summary_path = work_dir / "summary.json"
+    print(
+        f"Starting evaluation with {args.num_gpus} GPU replica(s)",
+        flush=True,
+    )
+    with GenerationRunner(
+        model_path=model_path,
+        device=args.device,
+        num_gpus=args.num_gpus,
+        attention=args.attention,
+        batch_size=args.batch_size,
+        min_pixels=args.min_pixels,
+        max_pixels=args.max_pixels,
+        max_new_tokens=args.max_new_tokens,
+    ) as runner:
+        for task in pending:
+            _build_manifest(
+                dataset_name=task["dataset"],
+                dataset_dir=task["dataset_dir"],
+                shot=task["shot"],
+                output=task["manifest"],
+                seed=args.seed,
+                min_box_area_ratio=args.min_box_area_ratio,
+                max_query_pairs=args.max_query_pairs,
+            )
+            payload = _evaluate_one(
+                runner=runner,
+                model_path=model_path,
+                dataset_name=task["dataset"],
+                manifest=task["manifest"],
+                result_path=task["result"],
+                batch_size=args.batch_size,
+                min_pixels=args.min_pixels,
+                max_pixels=args.max_pixels,
+                max_new_tokens=args.max_new_tokens,
+                attention=args.attention,
+            )
+            shot_key = str(task["shot"])
+            metrics = payload["metrics_by_shot"][shot_key]
+            model_map = metrics["coco_map"]["model"]
+            ranking_map = metrics["coco_map"]["ranking"]
+            row = {
+                "dataset": task["dataset"],
+                "shot": task["shot"],
+                "episodes": metrics["episodes"],
+                "map_50_95": model_map["map_50_95"],
+                "map_50": model_map["map_50"],
+                "map_75": model_map["map_75"],
+                "ranking_map_50_95": ranking_map["map_50_95"],
+                "result": str(task["result"].resolve()),
+            }
+            summary_rows.append(row)
+            write_json(summary_path, summary_rows)
+            print(
+                f"[{task['dataset']} {task['shot']}-shot] "
+                f"episodes={row['episodes']} "
+                f"mAP={row['map_50_95']:.4f} "
+                f"AP50={row['map_50']:.4f} "
+                f"AP75={row['map_75']:.4f} "
+                f"ranking-mAP={row['ranking_map_50_95']:.4f}",
+                flush=True,
+            )
+
+    print(f"Saved summary to {summary_path}")
+
+
+if __name__ == "__main__":
+    main()

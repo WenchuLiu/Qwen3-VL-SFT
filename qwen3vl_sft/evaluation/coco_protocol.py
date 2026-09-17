@@ -11,7 +11,7 @@ import json
 from typing import Iterable, Mapping, Sequence
 
 PROTOCOL_NAME = "positive_category_conditioned_icl"
-PROMPT_TEMPLATE_VERSION = "inst-v4"
+PROMPT_TEMPLATE_VERSION = "inst-v5"
 LOSS_MODE = "last_assistant"
 
 TRAIN_SYSTEM_PROMPT = (
@@ -51,7 +51,7 @@ def build_question(
     verb = "locate" if query else "Locate"
     question = (
         f"{prefix}{verb} all of the following objects: {category} in "
-        f"{image_phrase} and output at most 20 detections as a JSON list like "
+        f"{image_phrase} and output all detections as a JSON list like "
     )
     if include_confidence:
         return (
