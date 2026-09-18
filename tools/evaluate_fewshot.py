@@ -50,7 +50,38 @@ DATASET_DIRS = {
     "DIOR": "VISUALDIOR",
     "VISUALDIOR": "VISUALDIOR",
 }
-DEFAULT_DATASETS = tuple(DATASET_DIRS)
+# Cross-domain generation budgets: the five standard datasets use 1024
+# tokens, while VISUALDIOR uses 2048 tokens.
+DATASET_MAX_NEW_TOKENS = {
+    "ArTaxOr": 1024,
+    "Clipart1k": 1024,
+    "FISH": 1024,
+    "NEU-DET": 1024,
+    "UODD": 1024,
+    "DIOR": 2048,
+    "VISUALDIOR": 2048,
+}
+DEFAULT_DATASETS = (
+    "ArTaxOr",
+    "Clipart1k",
+    "FISH",
+    "NEU-DET",
+    "UODD",
+    "VISUALDIOR",
+)
+
+
+def _max_new_tokens_for_dataset(
+    dataset_name: str,
+    override: int | None,
+) -> int:
+    """Return the Qwen3-VL-compatible budget, unless explicitly overridden."""
+    if override is not None:
+        return override
+    try:
+        return DATASET_MAX_NEW_TOKENS[dataset_name]
+    except KeyError as error:
+        raise ValueError(f"no max_new_tokens configured for {dataset_name!r}") from error
 
 
 def _dataset_dir(data_root: Path, name: str) -> tuple[str, Path]:
@@ -99,14 +130,19 @@ def _load_model(model_path: str, device: str, attention: str):
     return model, processor
 
 
-def _result_is_complete(path: Path) -> bool:
+def _result_is_complete(path: Path, expected_max_new_tokens: int | None = None) -> bool:
     if not path.is_file():
         return False
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
-    return bool(payload.get("metrics_by_shot")) and "predictions" in payload
+    if not bool(payload.get("metrics_by_shot")) or "predictions" not in payload:
+        return False
+    return (
+        expected_max_new_tokens is None
+        or payload.get("max_new_tokens") == expected_max_new_tokens
+    )
 
 
 def _generation_worker_loop(
@@ -119,7 +155,6 @@ def _generation_worker_loop(
     batch_size: int,
     min_pixels: int,
     max_pixels: int,
-    max_new_tokens: int,
 ) -> None:
     """Load one model replica and process generation tasks until shutdown."""
     try:
@@ -131,7 +166,7 @@ def _generation_worker_loop(
             item = task_queue.get()
             if item is None:
                 return
-            task_id, records = item
+            task_id, records, max_new_tokens = item
 
             def report_progress(done: int, total: int) -> None:
                 if done == total or done % 100 == 0:
@@ -169,7 +204,6 @@ class GenerationRunner:
         batch_size: int,
         min_pixels: int,
         max_pixels: int,
-        max_new_tokens: int,
     ) -> None:
         if num_gpus < 1:
             raise ValueError("num_gpus must be positive")
@@ -178,7 +212,6 @@ class GenerationRunner:
         self.batch_size = batch_size
         self.min_pixels = min_pixels
         self.max_pixels = max_pixels
-        self.max_new_tokens = max_new_tokens
         self.task_id = 0
         self.parallel = num_gpus > 1
         self.model = None
@@ -218,7 +251,6 @@ class GenerationRunner:
                     batch_size,
                     min_pixels,
                     max_pixels,
-                    max_new_tokens,
                 ),
             )
             process.start()
@@ -230,7 +262,7 @@ class GenerationRunner:
     def device_label(self) -> str:
         return ",".join(self.devices)
 
-    def generate(self, records: list[dict]) -> list[str]:
+    def generate(self, records: list[dict], *, max_new_tokens: int) -> list[str]:
         if not self.parallel:
             return generate_responses(
                 records,
@@ -240,14 +272,14 @@ class GenerationRunner:
                 batch_size=self.batch_size,
                 min_pixels=self.min_pixels,
                 max_pixels=self.max_pixels,
-                max_new_tokens=self.max_new_tokens,
+                max_new_tokens=max_new_tokens,
             )
 
         task_id = self.task_id
         self.task_id += 1
         chunks = [records[rank::len(self.processes)] for rank in range(len(self.processes))]
         for task_queue, chunk in zip(self.task_queues, chunks):
-            task_queue.put((task_id, chunk))
+            task_queue.put((task_id, chunk, max_new_tokens))
 
         responses_by_rank: dict[int, list[str]] = {}
         while len(responses_by_rank) < len(self.processes):
@@ -382,7 +414,7 @@ def _evaluate_one(
 ) -> dict:
     metadata, records = load_episodes(manifest)
     started = time.monotonic()
-    responses = runner.generate(records)
+    responses = runner.generate(records, max_new_tokens=max_new_tokens)
     result = evaluate_episode_predictions(
         records,
         responses,
@@ -435,7 +467,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--min-pixels", type=int, default=DEFAULT_MIN_PIXELS)
     parser.add_argument("--max-pixels", type=int, default=DEFAULT_MAX_PIXELS)
-    parser.add_argument("--max-new-tokens", type=int, default=256)
+    parser.add_argument(
+        "--max-new-tokens",
+        type=int,
+        default=None,
+        help=(
+            "Global generation-budget override. If omitted, use the "
+            "Qwen3-VL dataset defaults: 1024 for ArTaxOr/Clipart1k/FISH/"
+            "NEU-DET/UODD and 2048 for DIOR/VISUALDIOR."
+        ),
+    )
+    parser.add_argument(
+        "--flat-work-dir",
+        action="store_true",
+        help="For one dataset, write shot results directly under --work-dir.",
+    )
     parser.add_argument(
         "--min-box-area-ratio",
         type=float,
@@ -463,7 +509,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    if args.batch_size < 1 or args.max_new_tokens < 1:
+    if args.batch_size < 1 or (
+        args.max_new_tokens is not None and args.max_new_tokens < 1
+    ):
         raise ValueError("batch size and max new tokens must be positive")
     if args.num_gpus < 1:
         raise ValueError("num gpus must be positive")
@@ -477,10 +525,22 @@ def main() -> None:
     model_path = str(Path(args.model_path).expanduser().resolve()) if Path(args.model_path).exists() else args.model_path
 
     datasets = [_dataset_dir(data_root, name) for name in args.datasets]
+    flat_work_dir = args.flat_work_dir and len(datasets) == 1
+    max_new_tokens_by_dataset = {
+        dataset_name: _max_new_tokens_for_dataset(
+            dataset_name,
+            args.max_new_tokens,
+        )
+        for dataset_name, _ in datasets
+    }
     tasks = []
     for dataset_name, dataset_dir in datasets:
         for shot in shots:
-            shot_dir = work_dir / dataset_name / f"{shot}shot"
+            shot_dir = (
+                work_dir / f"{shot}shot"
+                if flat_work_dir
+                else work_dir / dataset_name / f"{shot}shot"
+            )
             tasks.append(
                 {
                     "dataset": dataset_name,
@@ -488,6 +548,7 @@ def main() -> None:
                     "shot": shot,
                     "manifest": shot_dir / "episodes.json",
                     "result": shot_dir / "result.json",
+                    "max_new_tokens": max_new_tokens_by_dataset[dataset_name],
                 }
             )
 
@@ -506,6 +567,8 @@ def main() -> None:
             "min_pixels": args.min_pixels,
             "max_pixels": args.max_pixels,
             "max_new_tokens": args.max_new_tokens,
+            "max_new_tokens_by_dataset": max_new_tokens_by_dataset,
+            "flat_work_dir": flat_work_dir,
             "min_box_area_ratio": args.min_box_area_ratio,
             "attention": args.attention,
             "all_query_pairs": True,
@@ -516,7 +579,8 @@ def main() -> None:
     pending = [
         task
         for task in tasks
-        if not args.skip_existing or not _result_is_complete(task["result"])
+        if not args.skip_existing
+        or not _result_is_complete(task["result"], task["max_new_tokens"])
     ]
     if not pending:
         print(f"All requested results already exist under {work_dir}")
@@ -536,7 +600,6 @@ def main() -> None:
         batch_size=args.batch_size,
         min_pixels=args.min_pixels,
         max_pixels=args.max_pixels,
-        max_new_tokens=args.max_new_tokens,
     ) as runner:
         for task in pending:
             _build_manifest(
@@ -557,7 +620,7 @@ def main() -> None:
                 batch_size=args.batch_size,
                 min_pixels=args.min_pixels,
                 max_pixels=args.max_pixels,
-                max_new_tokens=args.max_new_tokens,
+                max_new_tokens=task["max_new_tokens"],
                 attention=args.attention,
             )
             shot_key = str(task["shot"])

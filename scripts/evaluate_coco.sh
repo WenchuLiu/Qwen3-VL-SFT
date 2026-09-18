@@ -21,5 +21,5 @@ PYTHONPATH="${ROOT_DIR}:${PYTHONPATH:-}" "${PYTHON_BIN}" tools/evaluate_coco.py 
   --batch-size "${BATCH_SIZE:-1}" \
   --min-pixels "${MIN_PIXELS:-3136}" \
   --max-pixels "${MAX_PIXELS:-640000}" \
-  --max-new-tokens "${MAX_NEW_TOKENS:-256}" \
+  --max-new-tokens "${MAX_NEW_TOKENS:-1024}" \
   --attention "${ATTN_IMPLEMENTATION:-sdpa}"

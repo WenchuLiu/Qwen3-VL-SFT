@@ -26,7 +26,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--min-pixels", type=int, default=DEFAULT_MIN_PIXELS)
     parser.add_argument("--max-pixels", type=int, default=DEFAULT_MAX_PIXELS)
-    parser.add_argument("--max-new-tokens", type=int, default=256)
+    parser.add_argument("--max-new-tokens", type=int, default=1024)
     parser.add_argument(
         "--attention",
         choices=("sdpa", "flash_attention_2", "eager"),

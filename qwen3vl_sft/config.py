@@ -125,7 +125,7 @@ def build_train_parser() -> argparse.ArgumentParser:
     parser.add_argument("--coco-eval-batch-size", type=int, default=1)
     parser.add_argument("--coco-eval-min-pixels", type=int, default=None)
     parser.add_argument("--coco-eval-max-pixels", type=int, default=None)
-    parser.add_argument("--coco-eval-max-new-tokens", type=int, default=256)
+    parser.add_argument("--coco-eval-max-new-tokens", type=int, default=1024)
     return parser
 
 

@@ -61,7 +61,7 @@ if [[ -n "${EVAL_EPISODES}" ]]; then
   ARGS+=(
     --coco-eval-episodes "${EVAL_EPISODES}"
     --coco-eval-batch-size "${COCO_EVAL_BATCH_SIZE:-1}"
-    --coco-eval-max-new-tokens "${COCO_EVAL_MAX_NEW_TOKENS:-256}"
+    --coco-eval-max-new-tokens "${COCO_EVAL_MAX_NEW_TOKENS:-1024}"
   )
 fi
 if [[ -n "${RESUME_FROM_CHECKPOINT:-}" ]]; then

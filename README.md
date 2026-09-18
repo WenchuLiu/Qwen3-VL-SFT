@@ -162,6 +162,15 @@ OUTPUT=runs/base.json \
 bash scripts/evaluate_coco.sh
 ```
 
+For the standard 500-query-image evaluation, the standalone COCO launcher
+builds `data/coco/val_episodes.json` when needed and uses `1024` new tokens:
+
+```bash
+COCO_ROOT=/data/coco \
+MODEL_NAME_OR_PATH=Qwen/Qwen3-VL-4B-Instruct \
+bash fewshot_eval/scripts/run_coco.sh
+```
+
 Train and evaluate with generation-based validation:
 
 ```bash
@@ -186,17 +195,27 @@ bash scripts/evaluate_coco.sh
 
 ## Local few-shot benchmark
 
-The bundled launcher evaluates the original local 4B checkpoint on ArTaxOr,
-Clipart1k, FISH, NEU-DET, and UODD at 0/1/2/4-shot. It uses each dataset's
-fixed `annotations/{1,2,4}_shot.json` support file and evaluates every positive
-test image/category pair with official COCO mAP:
+The few-shot benchmark is organized as one launcher per cross-domain dataset.
+It evaluates the original local 4B checkpoint on ArTaxOr, Clipart1k, FISH,
+NEU-DET, UODD, and VISUALDIOR at 0/1/2/4-shot. It uses each dataset's fixed
+`annotations/{1,2,4}_shot.json` support file and evaluates every positive test
+image/category pair with official COCO mAP. Its generation budgets match the
+configured cross-domain evaluation: `1024` new tokens for ArTaxOr,
+Clipart1k, FISH, NEU-DET, and UODD, and `2048` for VISUALDIOR. Set
+`MAX_NEW_TOKENS` only when a global override is intended:
 
 ```bash
-CKPT=weights/Qwen3-VL-4B-Instruct \
-  bash scripts/evaluate_fewshot.sh
+CKPT=weights/Qwen3-VL-4B-Instruct bash fewshot_eval/scripts/run_artaxor.sh
 ```
 
-The launcher defaults to two persistent GPU workers (`cuda:0` and `cuda:1`),
+For example, `MAX_NEW_TOKENS=2048` overrides the dataset-specific default for
+the selected dataset. Run each dataset independently with its corresponding
+launcher: `run_artaxor.sh`, `run_clipart1k.sh`, `run_fish.sh`, `run_neudet.sh`,
+`run_uodd.sh`, or `run_visualdior.sh`. Individual runs write to
+`work_dirs/qwen3-vl-4b-base-fewshot/<dataset>/`, keeping each dataset's
+`config.json`, `summary.json`, results, and `evaluation.log` separate.
+
+Each launcher defaults to two persistent GPU workers (`cuda:0` and `cuda:1`),
 each with its own 4B model replica. Override with `NUM_GPUS=1` when only one
 GPU is available.
 
