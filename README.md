@@ -13,24 +13,37 @@ RoPE preprocessing, while making the training and evaluation contract explicit.
 
 ## Design
 
-The repository has four responsibilities:
+The repository follows the same separation used by the reference
+LocateAnything project: model code, training code, evaluation applications,
+and operational launchers are separate package boundaries.
 
 ```text
 qwen3vl_sft/
-  data/          Qwen conversation parsing, labels, multimodal collation, RoPE
-  evaluation/    COCO episode protocol, generation, parsing, and metrics
-  modeling.py    model loading, LoRA, and trainable-module selection
-  train.py       one training entry point
-tools/           command-line entry points
+  model/         Qwen3-VL loading, LoRA, and trainable-module policies
+  data/          schema, messages, single-record preprocessing, and RoPE
+  train/         arguments, datasets, collator, Trainer wiring, and runner
+  evaluation/    coco/ protocol plus fewshot/ evaluation applications
+tools/           command-line compatibility launchers
 scripts/         reproducible shell wrappers
-tests/           CPU-only protocol and metric tests
+shell/           reference-style launchers that delegate to scripts/
+document/        architecture, training, and evaluation notes
 ```
 
 The source of truth for the COCO protocol is
-`qwen3vl_sft/evaluation/coco_protocol.py`. Do not copy its prompt into a shell
-script or a second evaluator. The default and only supported prompt template is
-`inst-v4`: SFT targets omit confidence, while the final evaluation query asks
+`qwen3vl_sft/evaluation/coco/protocol.py`; the older flat module path is a
+compatibility facade. Do not copy its prompt into a shell script or a second
+evaluator. The default and only supported prompt template is `inst-v5`: SFT
+targets omit confidence, while the final evaluation query asks
 the model to estimate confidence for each predicted box.
+
+The main training command is now the package entry point:
+
+```bash
+torchrun --nproc_per_node=2 -m qwen3vl_sft.train ...
+```
+
+Existing `tools/train.py`, `tools/evaluate_fewshot.py`, and flat
+`qwen3vl_sft.*` imports remain supported as thin compatibility launchers.
 
 ## Install
 

@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from qwen3vl_sft.config import DEFAULT_MAX_PIXELS, DEFAULT_MIN_PIXELS
-from qwen3vl_sft.evaluation.generation import evaluate_checkpoint
+from qwen3vl_sft.evaluation.coco.generation import evaluate_checkpoint
 
 
 def main() -> None:

@@ -1,4 +1,9 @@
-"""Single entry point for Qwen3-VL supervised fine-tuning."""
+"""Training orchestration for Qwen3-VL SFT.
+
+This module is deliberately limited to runtime wiring.  Argument parsing,
+data construction, model policy, and Trainer implementations live in their
+respective package modules.
+"""
 
 from __future__ import annotations
 
@@ -10,14 +15,14 @@ from pathlib import Path
 import torch
 from transformers import TrainingArguments, set_seed
 
-from .config import build_train_parser, data_config_from_args
-from .data.preprocess import make_data_module
-from .modeling import (
+from .arguments import build_train_parser, data_config_from_args
+from .data import make_data_module
+from ..model.loader import (
     configure_trainable_parameters,
     load_model_and_processor,
     save_model_and_processor,
 )
-from .trainers import GenerationEvalTrainer, TrainingTelemetryTrainer
+from .trainer import GenerationEvalTrainer, TrainingTelemetryTrainer
 
 
 logger = logging.getLogger(__name__)
@@ -238,3 +243,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

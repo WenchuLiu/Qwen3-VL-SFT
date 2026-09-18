@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from qwen3vl_sft.evaluation.coco_data import (
+from qwen3vl_sft.evaluation.coco.data import (
     build_eval_records,
     build_train_records,
     load_coco_frames,
@@ -21,7 +21,7 @@ from qwen3vl_sft.evaluation.coco_data import (
     select_image_ids,
     write_json,
 )
-from qwen3vl_sft.evaluation.coco_protocol import (
+from qwen3vl_sft.evaluation.coco.protocol import (
     LOSS_MODE,
     PROTOCOL_NAME,
     PROMPT_TEMPLATE_VERSION,

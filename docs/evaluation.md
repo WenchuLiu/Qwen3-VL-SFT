@@ -20,9 +20,9 @@ episode generation. Both standalone evaluation and in-training evaluation call
 the same functions:
 
 ```text
-evaluation/coco_protocol.py  -> prompt and target serialization
-evaluation/generation.py     -> processor + generate()
-evaluation/metrics.py        -> parser + IoU matching + F1
+qwen3vl_sft/evaluation/coco/protocol.py   -> prompt and target serialization
+qwen3vl_sft/evaluation/coco/generation.py -> processor + generate()
+qwen3vl_sft/evaluation/coco/metrics.py    -> parser + IoU matching + F1
 ```
 
 An episode has this shape:
