@@ -5,7 +5,9 @@ ENV_NAME="${ENV_NAME:-LLM}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.10}"
 CUDA_VERSION="${CUDA_VERSION:-11.8}"
 TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu118}"
-INSTALL_FLASH_ATTN="${INSTALL_FLASH_ATTN:-1}"
+# FlashAttention is optional. SDPA is the default attention backend, so a
+# normal environment installation must not build or download flash-attn.
+INSTALL_FLASH_ATTN="${INSTALL_FLASH_ATTN:-0}"
 MAX_JOBS="${MAX_JOBS:-3}"
 
 if ! command -v conda >/dev/null 2>&1; then

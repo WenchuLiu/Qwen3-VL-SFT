@@ -48,22 +48,26 @@ Existing `tools/train.py`, `tools/evaluate_fewshot.py`, and flat
 ## Install
 
 For the pinned NVIDIA A40 training environment, first request one GPU and enter
-the node allocated by Slurm. For example, if the allocation reports `gpu1`:
+the allocated compute node. Then run the installer from the repository root:
 
 ```bash
 salloc -p gpu -N1 -n3 --gres=gpu:1
-ssh gpu1
-cd /home/u1120240334/code/Qwen3-VL-SFT
-bash install_llm_env.sh
+ssh <allocated-gpu-node>
+# cd Qwen3-VL-SFT
+INSTALL_FLASH_ATTN=0 bash install_llm_env.sh
 conda activate LLM
 ```
 
 The script creates (or updates) a Python 3.10 Conda environment named `LLM`,
-installs PyTorch 2.6 with CUDA 11.8 and an environment-local CUDA toolkit, then
-builds FlashAttention for the A40's `sm_86` architecture. It finishes with an
-actual BF16 CUDA operation. CUDA 11.8 is intentional: it supports the A40 while
-requiring an older cluster driver than CUDA 12.4. After leaving the GPU node,
-release the allocation with `scancel JOBID`.
+installs PyTorch 2.6 with CUDA 11.8 and the repository's pinned runtime
+dependencies, and finishes with an actual BF16 CUDA operation. FlashAttention
+is not installed: the project uses PyTorch `sdpa` by default. CUDA 11.8 is
+intentional because it supports the A40 while requiring an older cluster driver
+than CUDA 12.4. After leaving the GPU node, release the allocation with
+`scancel JOBID`.
+
+The complete no-FlashAttention procedure, including a manual virtualenv path,
+is documented in [`INSTALL.md`](INSTALL.md).
 
 Alternatively, use a CUDA-compatible PyTorch build and install the package in
 a virtual environment:
@@ -76,8 +80,8 @@ python -m pip install -e '.[dev]'
 ```
 
 For multi-GPU training, use a recent CUDA/PyTorch combination supported by
-Transformers, Accelerate, and PEFT. `flash-attn` is optional; the default
-attention implementation is `sdpa`. The default image budget is 3,136 to
+Transformers, Accelerate, and PEFT. Do not pass `flash_attention_2`; use
+`sdpa` (the default) or `eager`. The default image budget is 3,136 to
 640,000 pixels (an 800x800-equivalent maximum) for both training and COCO
 generation evaluation; override it explicitly in both commands when changing
 the budget.
