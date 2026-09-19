@@ -31,7 +31,8 @@ VISUALDIOR uses 2,048. Their per-dataset launchers are under
 
 Visual Enhancement is implemented in the shared prompt builder. The dedicated
 launcher covers ArTaxOr, Clipart1k, FISH, NEU-DET, UODD, and VISUALDIOR at
-1/2/4 shots. With
+1/2/4 shots. Run it from the repository root; its default paths are relative
+to that root. With
 `--ve`, each support image is copied in memory and its normalized GT boxes are
 drawn in red before vision processing; the query image remains unchanged. The
 standalone four-GPU launcher is:

@@ -5,11 +5,13 @@ set -euo pipefail
 # VE draws red GT boxes on support images only; query images remain untouched.
 # The evaluator's fixed protocol is already inst/class-wise/positive-query.
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REPO="${REPO:-.}"
+cd "${REPO}"
+
 PYTHON_BIN="${PYTHON_BIN:-python}"
-MODEL_PATH="${MODEL_PATH:-${CKPT:-${ROOT_DIR}/weights/Qwen3-VL-4B-Instruct}}"
-DATA_ROOT="${DATA_ROOT:-${ROOT_DIR}/data}"
-WORK_ROOT="${WORK_ROOT:-${OUTPUT_DIR:-${ROOT_DIR}/work_dirs/qwen3-vl-4b-ve-4gpu}}"
+MODEL_PATH="${MODEL_PATH:-${CKPT:-weights/Qwen3-VL-4B-Instruct}}"
+DATA_ROOT="${DATA_ROOT:-data}"
+WORK_ROOT="${WORK_ROOT:-${OUTPUT_DIR:-work_dirs/qwen3-vl-4b-ve-4gpu}}"
 DEFAULT_DATASETS=(ArTaxOr clipart1k FISH NEU-DET UODD VISUALDIOR)
 DEFAULT_SHOTS=(1 2 4)
 DEVICE="${DEVICE:-cuda:0}"
@@ -33,7 +35,6 @@ else
   SHOT_LIST=("${DEFAULT_SHOTS[@]}")
 fi
 
-cd "${ROOT_DIR}"
 mkdir -p "${WORK_ROOT}"
 LOG_FILE="${LOG_FILE:-${WORK_ROOT}/evaluation.log}"
 exec > >(tee -a "${LOG_FILE}") 2>&1
@@ -79,4 +80,4 @@ if [[ "${SKIP_EXISTING:-0}" == "1" ]]; then
 fi
 EVAL_ARGS+=("$@")
 
-PYTHONPATH="${ROOT_DIR}:${PYTHONPATH:-}" "${PYTHON_BIN}" "${EVAL_ARGS[@]}"
+PYTHONPATH=".:${PYTHONPATH:-}" "${PYTHON_BIN}" "${EVAL_ARGS[@]}"
