@@ -138,7 +138,7 @@ PY
 
 ```bash
 ATTN_IMPLEMENTATION=sdpa bash scripts/train_lora.sh
-ATTENTION=sdpa bash fewshot_eval/scripts/run_ve.sh
+VE=1 ATTENTION=sdpa bash scripts/evaluate_fewshot.sh
 ```
 
 直接调用 Python 入口时使用：

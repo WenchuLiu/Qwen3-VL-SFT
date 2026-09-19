@@ -7,9 +7,9 @@
 #SBATCH --ntasks=12
 #SBATCH --gres=gpu:4
 #SBATCH --time=02:00:00
-#SBATCH -D /home/u1120240334/code/Qwen3-VL-SFT
-#SBATCH --output=/home/u1120240334/code/Qwen3-VL-SFT/slurm-%x-%j.out
-#SBATCH --error=/home/u1120240334/code/Qwen3-VL-SFT/slurm-%x-%j.err
+#SBATCH -D .
+#SBATCH --output=slurm-%x-%j.out
+#SBATCH --error=slurm-%x-%j.err
 
 set -euo pipefail
 
@@ -18,7 +18,7 @@ source ~/.bashrc
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV:-LLM}"
 
-ROOT_DIR="/home/u1120240334/code/Qwen3-VL-SFT"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 USER_HOME="$(getent passwd "${USER}" | cut -d: -f6)"
 SWANLAB_ENV_FILE="${SWANLAB_ENV_FILE:-${USER_HOME}/.config/qwen3vl-sft/swanlab.env}"
 
@@ -29,14 +29,14 @@ if [[ -f "${SWANLAB_ENV_FILE}" ]]; then
   source "${SWANLAB_ENV_FILE}"
 fi
 
-export SWANLAB_PROJ_NAME="${SWANLAB_PROJ_NAME:-Qwen3-VL-A40}"
+export SWANLAB_PROJ_NAME="${SWANLAB_PROJ_NAME:-Qwen3-VL-SFT}"
 export SWANLAB_WORKSPACE="${SWANLAB_WORKSPACE:-wenchuliu3}"
 export SWANLAB_MODE="${SWANLAB_MODE:-cloud}"
 unset SWANLAB_PROJECT
 
 MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-${ROOT_DIR}/weights/Qwen3-VL-4B-Instruct}"
-DATASET="${DATASET:-${USER_HOME}/data/LLM/coco/smoke_train_10images.json}"
-EVAL_EPISODES="${EVAL_EPISODES:-${USER_HOME}/data/LLM/coco/smoke_eval_10.json}"
+DATASET="${DATASET:-${ROOT_DIR}/data/LLM/coco/smoke_train_10images.json}"
+EVAL_EPISODES="${EVAL_EPISODES:-${ROOT_DIR}/data/LLM/coco/smoke_eval_10.json}"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/runs/slurm-smoke-10images-10eval}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-4}"
 REPORT_TO="${REPORT_TO:-swanlab}"

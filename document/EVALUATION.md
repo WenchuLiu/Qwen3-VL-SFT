@@ -24,10 +24,16 @@ OUTPUT=runs/base.json \
 bash scripts/evaluate_coco.sh
 ```
 
+For the standard 500-query-image benchmark, use
+`scripts/evaluate_coco_benchmark.sh`; it builds the fixed manifest when it is
+missing and then delegates to the same canonical evaluator. The old
+`fewshot_eval/scripts/run_coco.sh` path is a compatibility wrapper.
+
 The five standard cross-domain datasets use 1,024 generated tokens;
-VISUALDIOR uses 2,048. Their per-dataset launchers are under
-`fewshot_eval/scripts/`, while the implementation and registry live under
-`qwen3vl_sft/evaluation/fewshot/`.
+VISUALDIOR uses 2,048. The canonical cross-domain launcher is
+`scripts/evaluate_fewshot.sh`; the implementation and registry live under
+`qwen3vl_sft/evaluation/fewshot/`. Dataset-specific launchers under
+`fewshot_eval/scripts/` are compatibility paths.
 
 Visual Enhancement is implemented in the shared prompt builder. The dedicated
 launcher covers ArTaxOr, Clipart1k, FISH, NEU-DET, UODD, and VISUALDIOR at
@@ -38,9 +44,10 @@ drawn in red before vision processing; the query image remains unchanged. The
 standalone four-GPU launcher is:
 
 ```bash
+VE=1 \
 MODEL_PATH=weights/Qwen3-VL-4B-Instruct \
 DATA_ROOT=data NUM_GPUS=4 \
-bash fewshot_eval/scripts/run_ve.sh
+bash scripts/evaluate_fewshot.sh
 ```
 
 Results record both `visual_enhancement` and the short compatibility key `ve`,

@@ -23,11 +23,18 @@ qwen3vl_sft/
   data/          schema, messages, single-record preprocessing, and RoPE
   train/         arguments, datasets, collator, Trainer wiring, and runner
   evaluation/    coco/ protocol plus fewshot/ evaluation applications
-tools/           command-line compatibility launchers
-scripts/         reproducible shell wrappers
-shell/           reference-style launchers that delegate to scripts/
-document/        architecture, training, and evaluation notes
+tools/           thin Python command-line entry points
+scripts/         canonical reproducible shell entry points
+shell/           compatibility wrappers that delegate to scripts/
+fewshot_eval/    compatibility paths for old dataset-specific launchers
+docs/            active project structure and migration documentation
+document/        detailed legacy documents retained for existing links
 ```
+
+The complete ownership and entry-point policy is documented in
+[`docs/PROJECT_STRUCTURE.md`](docs/PROJECT_STRUCTURE.md). In particular,
+`VE` is a mode of the shared generation evaluator, not a separate evaluation
+implementation.
 
 The source of truth for the COCO protocol is
 `qwen3vl_sft/evaluation/coco/protocol.py`; the older flat module path is a
@@ -115,7 +122,7 @@ The most direct entry point is:
 ```bash
 torchrun --nproc_per_node=2 -m qwen3vl_sft.train \
   --model-name-or-path Qwen/Qwen3-VL-4B-Instruct \
-  --dataset /data/my_train.json \
+  --dataset data/my_train.json \
   --output-dir runs/my-lora \
   --lora-enable true \
   --bf16 true \
@@ -127,7 +134,7 @@ The equivalent wrapper is `scripts/train_lora.sh`:
 ```bash
 export SWANLAB_API_KEY=your_api_key
 MODEL_NAME_OR_PATH=Qwen/Qwen3-VL-4B-Instruct \
-DATASET=/data/my_train.json \
+DATASET=data/my_train.json \
 OUTPUT_DIR=runs/my-lora \
 bash scripts/train_lora.sh
 ```
@@ -175,7 +182,7 @@ For ordinary held-out language-model validation:
 ```bash
 torchrun --nproc_per_node=2 -m qwen3vl_sft.train \
   --model-name-or-path Qwen/Qwen3-VL-4B-Instruct \
-  --dataset /data/train.json \
+  --dataset data/train.json \
   --eval-mode loss \
   --eval-ratio 0.05 \
   --eval-strategy epoch \
@@ -194,7 +201,7 @@ episode file is an immutable evaluation manifest: changing the seed, split,
 support pool, or shot list means creating a new manifest.
 
 ```bash
-export COCO_ROOT=/data/coco
+export COCO_ROOT=data/coco
 bash scripts/build_coco_train.sh
 bash scripts/build_coco_eval.sh
 ```
@@ -216,9 +223,9 @@ For the standard 500-query-image evaluation, the standalone COCO launcher
 builds `data/coco/val_episodes.json` when needed and uses `1024` new tokens:
 
 ```bash
-COCO_ROOT=/data/coco \
+COCO_ROOT=data/coco \
 MODEL_NAME_OR_PATH=Qwen/Qwen3-VL-4B-Instruct \
-bash fewshot_eval/scripts/run_coco.sh
+bash scripts/evaluate_coco_benchmark.sh
 ```
 
 Train and evaluate with generation-based validation:
@@ -245,9 +252,9 @@ bash scripts/evaluate_coco.sh
 
 ## Local few-shot benchmark
 
-The few-shot benchmark is organized as one launcher per cross-domain dataset.
-It evaluates the original local 4B checkpoint on ArTaxOr, Clipart1k, FISH,
-NEU-DET, UODD, and VISUALDIOR at 0/1/2/4-shot. It uses each dataset's fixed
+The few-shot benchmark has one canonical launcher. It evaluates the original
+local 4B checkpoint on ArTaxOr, Clipart1k, FISH, NEU-DET, UODD, and VISUALDIOR
+at 0/1/2/4-shot. It uses each dataset's fixed
 `annotations/{1,2,4}_shot.json` support file and evaluates every positive test
 image/category pair with official COCO mAP. Its generation budgets match the
 configured cross-domain evaluation: `1024` new tokens for ArTaxOr,
@@ -255,17 +262,24 @@ Clipart1k, FISH, NEU-DET, and UODD, and `2048` for VISUALDIOR. Set
 `MAX_NEW_TOKENS` only when a global override is intended:
 
 ```bash
-CKPT=weights/Qwen3-VL-4B-Instruct bash fewshot_eval/scripts/run_artaxor.sh
+MODEL_PATH=weights/Qwen3-VL-4B-Instruct \
+DATA_ROOT=data \
+bash scripts/evaluate_fewshot.sh
 ```
 
 For example, `MAX_NEW_TOKENS=2048` overrides the dataset-specific default for
-the selected dataset. Run each dataset independently with its corresponding
-launcher: `run_artaxor.sh`, `run_clipart1k.sh`, `run_fish.sh`, `run_neudet.sh`,
-`run_uodd.sh`, or `run_visualdior.sh`. Individual runs write to
-`work_dirs/qwen3-vl-4b-base-fewshot/<dataset>/`, keeping each dataset's
-`config.json`, `summary.json`, results, and `evaluation.log` separate.
+all selected datasets. Select a subset with `DATASETS` and shots with `SHOTS`:
 
-Each launcher defaults to two persistent GPU workers (`cuda:0` and `cuda:1`),
+```bash
+DATASETS="FISH VISUALDIOR" SHOTS="1 2 4" \
+bash scripts/evaluate_fewshot.sh
+```
+
+Individual runs write to `work_dirs/qwen3-vl-4b-fewshot/<dataset>/`, keeping
+each dataset's `config.json`, `summary.json`, results, and `evaluation.log`
+separate.
+
+The baseline launcher defaults to two persistent GPU workers (`cuda:0` and `cuda:1`),
 each with its own 4B model replica. Override with `NUM_GPUS=1` when only one
 GPU is available.
 
@@ -273,23 +287,25 @@ Visual Enhancement is available as an optional evaluation mode. It draws the
 ground-truth boxes on support images only; query images are never annotated.
 Run the launcher from the repository root; its default model, data, and output
 paths are project-relative.
-The dedicated launcher evaluates ArTaxOr, Clipart1k, FISH, NEU-DET, UODD, and
+The canonical launcher evaluates ArTaxOr, Clipart1k, FISH, NEU-DET, UODD, and
 VISUALDIOR at 1/2/4 shots with four GPU workers, batch size 2, an 800x800
 maximum image budget, and a separate output directory:
 
 ```bash
+VE=1 \
 MODEL_PATH=weights/Qwen3-VL-4B-Instruct \
 DATA_ROOT=data \
 NUM_GPUS=4 \
-bash fewshot_eval/scripts/run_ve.sh
+bash scripts/evaluate_fewshot.sh
 ```
 
-The same mode can be enabled for a single dataset with `--ve`, for example
-`SHOTS="1 2 4" NUM_GPUS=4 bash fewshot_eval/scripts/run_fish.sh --ve`. VE
-requires at least one support shot, so it cannot be combined with `--shots 0`.
+The same mode can be selected for one dataset with
+`VE=1 DATASETS=FISH SHOTS="1 2 4" bash scripts/evaluate_fewshot.sh`. The old
+`fewshot_eval/scripts/run_ve.sh` path remains a compatibility wrapper. VE
+requires at least one support shot, so it cannot be combined with `SHOTS="0"`.
 
 Results follow an MMDetection-style layout under the selected `WORK_ROOT`
-(default `work_dirs/qwen3-vl-4b-ve-4gpu/` for the launcher): `evaluation.log`, `config.json`,
+(default `work_dirs/qwen3-vl-4b-ve-fewshot/` for VE): `evaluation.log`, `config.json`,
 `summary.json`, and one `episodes.json` plus `result.json` per dataset/shot.
 Use `SKIP_EXISTING=1` to resume completed entries. The main metric is
 `map_50_95`; `map_50`, `map_75`, ranking-mAP, raw responses, and parsed
@@ -298,7 +314,7 @@ predictions are retained in each result file.
 The complete base-before/adapter-after workflow is available as:
 
 ```bash
-COCO_ROOT=/data/coco \
+COCO_ROOT=data/coco \
 MODEL_NAME_OR_PATH=Qwen/Qwen3-VL-4B-Instruct \
 bash scripts/run_coco_before_after.sh
 ```

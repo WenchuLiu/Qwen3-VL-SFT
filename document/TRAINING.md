@@ -7,7 +7,8 @@ python -m pip install -e '.[dev]'
 ```
 
 GPU training requires a CUDA-compatible PyTorch installation. The repository's
-`install_llm_env.sh` remains the cluster-specific A40 setup recipe.
+`install_llm_env.sh` installs the pinned environment without requiring a
+specific GPU model; see `INSTALL.md` for CUDA wheel overrides.
 
 ## Entry points
 
@@ -16,7 +17,7 @@ Use the package entry point for new runs:
 ```bash
 torchrun --nproc_per_node=2 -m qwen3vl_sft.train \
   --model-name-or-path Qwen/Qwen3-VL-4B-Instruct \
-  --dataset /data/train.json \
+  --dataset data/train.json \
   --output-dir runs/qwen3vl-lora \
   --lora-enable true \
   --bf16 true \
