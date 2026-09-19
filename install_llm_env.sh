@@ -3,28 +3,13 @@ set -euo pipefail
 
 ENV_NAME="${ENV_NAME:-LLM}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.10}"
-CUDA_VERSION="${CUDA_VERSION:-11.8}"
+# Use any official CUDA-enabled PyTorch wheel that matches the host driver/GPU.
+# cu118 is the conservative default; override this URL for another CUDA line.
 TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu118}"
-# FlashAttention is optional. SDPA is the default attention backend, so a
-# normal environment installation must not build or download flash-attn.
-INSTALL_FLASH_ATTN="${INSTALL_FLASH_ATTN:-0}"
-MAX_JOBS="${MAX_JOBS:-3}"
+REQUIRE_CUDA="${REQUIRE_CUDA:-0}"
 
 if ! command -v conda >/dev/null 2>&1; then
   echo "错误: 未找到 conda，请先加载 Miniconda/Anaconda。" >&2
-  exit 1
-fi
-
-# This script must run inside a Slurm allocation on an A40 compute node.
-if ! command -v nvidia-smi >/dev/null 2>&1; then
-  echo "错误: 当前终端未暴露 GPU。请先 salloc 申请 GPU，再 ssh 到分配的 gpu 节点。" >&2
-  exit 1
-fi
-
-GPU_NAMES="$(nvidia-smi --query-gpu=name --format=csv,noheader)"
-if ! grep -qi "A40" <<<"${GPU_NAMES}"; then
-  echo "错误: 当前分配的 GPU 不是 NVIDIA A40:" >&2
-  printf '%s\n' "${GPU_NAMES}" >&2
   exit 1
 fi
 
@@ -43,20 +28,6 @@ conda activate "${ENV_NAME}"
 python -m pip install --upgrade \
   pip setuptools wheel packaging ninja psutil
 
-# PyTorch 2.6 satisfies this repository's declared torch>=2.6 requirement.
-# CUDA 11.8 supports A40 (Ampere, sm_86) while working with more cluster drivers
-# than CUDA 12.4. Use NVIDIA's frozen label: the current unlabelled channel can
-# resolve the old 11.8 meta-package to incompatible CUDA 12.x components.
-conda install -y --override-channels --strict-channel-priority \
-  -c "nvidia/label/cuda-${CUDA_VERSION}.0" \
-  -c conda-forge \
-  "cuda-nvcc=${CUDA_VERSION}" \
-  "cuda-cudart-dev=${CUDA_VERSION}"
-conda install -y --override-channels -c conda-forge \
-  gcc_linux-64=11 \
-  gxx_linux-64=11 \
-  numpy=1.26.4 \
-  pillow=12.0.0
 set -u
 python -m pip install \
   torch==2.6.0 \
@@ -96,27 +67,9 @@ python -m pip install \
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 python -m pip install -e "${ROOT_DIR}" --no-deps
 
-export CUDA_HOME="${CONDA_PREFIX}"
-export PATH="${CUDA_HOME}/bin:${PATH}"
-export LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${CUDA_HOME}/lib:${LD_LIBRARY_PATH:-}"
-export TORCH_CUDA_ARCH_LIST="8.6"
-export MAX_JOBS
-export CC="${CONDA_PREFIX}/bin/x86_64-conda-linux-gnu-cc"
-export CXX="${CONDA_PREFIX}/bin/x86_64-conda-linux-gnu-c++"
-
-if [[ "${INSTALL_FLASH_ATTN}" == "1" ]]; then
-  FLASH_ATTN_WHEEL="${FLASH_ATTN_WHEEL:-${ROOT_DIR}/../flash_attn-2.7.2.post1+cu11torch2.6cxx11abiFALSE-cp310-cp310-linux_x86_64.whl}"
-  if [[ -f "${FLASH_ATTN_WHEEL}" ]]; then
-    python -m pip install "${FLASH_ATTN_WHEEL}"
-  else
-    python -m pip install flash-attn==2.7.2.post1 \
-      --no-build-isolation \
-      --extra-index-url https://pypi.org/simple
-  fi
-fi
-
 python - <<'PY'
 import importlib.util
+import os
 
 import accelerate
 import deepspeed
@@ -124,26 +77,41 @@ import peft
 import torch
 import transformers
 
-assert torch.cuda.is_available(), "PyTorch 无法访问已分配的 GPU"
-assert torch.version.cuda == "11.8", f"预期 PyTorch CUDA 11.8，实际为 {torch.version.cuda}"
-
-name = torch.cuda.get_device_name(0)
-capability = torch.cuda.get_device_capability(0)
-assert "A40" in name, f"预期 NVIDIA A40，实际为 {name}"
-assert capability == (8, 6), f"预期 A40 计算能力 8.6，实际为 {capability}"
-
-x = torch.randn(1024, 1024, device="cuda", dtype=torch.bfloat16)
-y = x @ x
-torch.cuda.synchronize()
-assert torch.isfinite(y).all().item(), "CUDA BF16 运算检查失败"
-
-print(f"GPU: {name}; compute capability: {capability[0]}.{capability[1]}")
 print(f"torch: {torch.__version__}; torch CUDA: {torch.version.cuda}")
 print(f"transformers: {transformers.__version__}")
 print(f"accelerate: {accelerate.__version__}")
 print(f"deepspeed: {deepspeed.__version__}; peft: {peft.__version__}")
 print(f"flash-attn installed: {importlib.util.find_spec('flash_attn') is not None}")
-print("CUDA BF16 matrix multiplication: OK")
+
+if not torch.cuda.is_available():
+    message = "PyTorch CUDA 不可用；安装完成，但当前环境不能进行 GPU 训练/推理。"
+    if os.environ.get("REQUIRE_CUDA", "0") == "1":
+        raise RuntimeError(message)
+    print(f"WARNING: {message}")
+else:
+    device_count = torch.cuda.device_count()
+    print(f"CUDA devices: {device_count}")
+    for index in range(device_count):
+        name = torch.cuda.get_device_name(index)
+        capability = torch.cuda.get_device_capability(index)
+        print(
+            f"GPU {index}: {name}; compute capability: "
+            f"{capability[0]}.{capability[1]}"
+        )
+    try:
+        bf16_supported = torch.cuda.is_bf16_supported()
+        dtype = torch.bfloat16 if bf16_supported else torch.float16
+        x = torch.randn(1024, 1024, device="cuda", dtype=dtype)
+        y = x @ x
+        torch.cuda.synchronize()
+        assert torch.isfinite(y).all().item(), "CUDA matrix multiplication check failed"
+        print(f"CUDA {dtype} matrix multiplication: OK")
+        print(f"CUDA BF16 supported: {bf16_supported}")
+    except RuntimeError as error:
+        message = f"CUDA 计算检查失败: {error}"
+        if os.environ.get("REQUIRE_CUDA", "0") == "1":
+            raise RuntimeError(message) from error
+        print(f"WARNING: {message}")
 PY
 
 echo "LLM 环境安装并验证完成。使用: conda activate ${ENV_NAME}"

@@ -47,24 +47,25 @@ Existing `tools/train.py`, `tools/evaluate_fewshot.py`, and flat
 
 ## Install
 
-For the pinned NVIDIA A40 training environment, first request one GPU and enter
-the allocated compute node. Then run the installer from the repository root:
+For a CUDA-enabled NVIDIA environment, enter the allocated compute node and run
+the installer from the repository root:
 
 ```bash
 salloc -p gpu -N1 -n3 --gres=gpu:1
 ssh <allocated-gpu-node>
 # cd Qwen3-VL-SFT
-INSTALL_FLASH_ATTN=0 bash install_llm_env.sh
+bash install_llm_env.sh
 conda activate LLM
 ```
 
 The script creates (or updates) a Python 3.10 Conda environment named `LLM`,
-installs PyTorch 2.6 with CUDA 11.8 and the repository's pinned runtime
-dependencies, and finishes with an actual BF16 CUDA operation. FlashAttention
-is not installed: the project uses PyTorch `sdpa` by default. CUDA 11.8 is
-intentional because it supports the A40 while requiring an older cluster driver
-than CUDA 12.4. After leaving the GPU node, release the allocation with
-`scancel JOBID`.
+installs PyTorch 2.6 with the default CUDA 11.8 wheel and the repository's
+pinned runtime dependencies. It enumerates all visible GPUs and runs a CUDA
+matrix-multiplication check when CUDA is available. The installer has no A40
+or `sm_86` requirement, and does not install FlashAttention: the project uses
+PyTorch `sdpa` by default. Set `TORCH_INDEX_URL` to another official PyTorch
+CUDA wheel index when the host driver/GPU needs a different CUDA line. After
+leaving the GPU node, release the allocation with `scancel JOBID`.
 
 The complete no-FlashAttention procedure, including a manual virtualenv path,
 is documented in [`INSTALL.md`](INSTALL.md).
@@ -79,8 +80,8 @@ python -m pip install -U pip
 python -m pip install -e '.[dev]'
 ```
 
-For multi-GPU training, use a recent CUDA/PyTorch combination supported by
-Transformers, Accelerate, and PEFT. Do not pass `flash_attention_2`; use
+For multi-GPU training, use a CUDA/PyTorch combination supported by the target
+GPU, Transformers, Accelerate, and PEFT. Do not pass `flash_attention_2`; use
 `sdpa` (the default) or `eager`. The default image budget is 3,136 to
 640,000 pixels (an 800x800-equivalent maximum) for both training and COCO
 generation evaluation; override it explicitly in both commands when changing

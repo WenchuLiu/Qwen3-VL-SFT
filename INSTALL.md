@@ -8,19 +8,21 @@
 
 - Linux
 - Conda 或 Miniconda
-- NVIDIA GPU；仓库提供的自动安装脚本按 NVIDIA A40、CUDA 11.8 测试
+- NVIDIA GPU；自动安装脚本默认使用 CUDA 11.8 的 PyTorch wheel，也支持通过
+  `TORCH_INDEX_URL` 切换到其他官方 CUDA wheel
 - Python 3.10
-- 建议使用 BF16；A40 的计算能力为 `sm_86`
+- 建议使用 BF16；是否支持 BF16 取决于目标 GPU
 
-如果只做 CPU 代码检查，可以使用手动安装方式，但 Qwen3-VL 推理和训练
-仍然需要 CUDA GPU。
+如果只做 CPU 代码检查，可以使用手动安装方式；Qwen3-VL 推理和训练仍然
+建议使用 CUDA GPU。自动安装器不检查 GPU 型号，也不要求 A40 或固定的
+`sm_86` 架构。
 
 ## 推荐安装：Conda + CUDA 11.8
 
-在已经分配 NVIDIA GPU 的计算节点上，从仓库根目录执行：
+在仓库根目录执行：
 
 ```bash
-INSTALL_FLASH_ATTN=0 bash install_llm_env.sh
+bash install_llm_env.sh
 conda activate LLM
 ```
 
@@ -30,19 +32,19 @@ conda activate LLM
 - PyTorch 2.6.0、TorchVision 0.21.0、TorchAudio 2.6.0
 - Transformers 4.57.1、Accelerate 1.11.0、PEFT 0.17.1
 - `qwen-vl-utils`、DeepSpeed、SwanLab、ModelScope、COCO evaluation 依赖
-- PyTorch CUDA 11.8 runtime
+- 默认 PyTorch CUDA 11.8 runtime；可通过 `TORCH_INDEX_URL` 选择其他官方
+  CUDA wheel
 
-脚本默认已经将 `INSTALL_FLASH_ATTN` 设为 `0`；显式写出来是为了避免
-误解。它不会下载或编译 FlashAttention，模型加载和评测统一使用
-`sdpa`。脚本最后会检查 CUDA、BF16 矩阵乘法以及关键 Python 包。
+它不会下载或编译 FlashAttention，模型加载和评测统一使用 `sdpa`。脚本
+会枚举所有可见 GPU，并在 CUDA 可用时进行矩阵乘法检查；不会检查 GPU
+必须是 A40，也不会固定 `sm_86`。
 
-该自动脚本会检查 `nvidia-smi` 和 A40 型号。如果当前是登录节点、没有
-GPU，或者 GPU 不是 A40，请使用下面的手动安装方式，或切换到已分配的
-GPU 节点。
+如果当前没有 GPU，安装仍可完成，但只能做 CPU 级别的导入和代码检查。
+设置 `REQUIRE_CUDA=1` 可以让安装器在 CUDA 不可用时直接失败。
 
 ## 手动安装：不使用 FlashAttention
 
-如果不需要自动配置 A40 的 Conda CUDA 工具链，可以手动创建环境：
+如果不需要自动配置 CUDA 相关环境，可以手动创建环境：
 
 ```bash
 conda create -n qwen3-vl-sft python=3.10 -y
@@ -89,8 +91,8 @@ python -m pip install -e . --no-deps
 ```
 
 上面的命令没有 `flash-attn`，也没有使用 `--no-build-isolation` 去编译
-FlashAttention。若某个 CUDA 扩展在特定机器上需要本地编译器，优先使用
-上面的自动安装脚本；这不改变项目对 FlashAttention 的非依赖性。
+FlashAttention。若某个 CUDA 扩展在特定机器上需要本地编译器，请根据目标
+GPU 和 CUDA 版本补充对应工具链；这不改变项目对 FlashAttention 的非依赖性。
 
 ## 验证安装
 
@@ -152,14 +154,18 @@ torchrun --nproc_per_node=2 -m qwen3vl_sft.train \
 不要传 `--attn-implementation flash_attention_2` 或
 `--attention flash_attention_2`。如果显存不足，优先降低
 `--max-pixels`、`BATCH_SIZE` 或 `--per-device-train-batch-size`。
+如果目标 GPU 不支持 BF16，可用 `BF16=false FP16=true bash
+scripts/train_lora.sh`，或在 Python 入口传 `--bf16 false --fp16 true`。
 
-## 安装脚本的可选开关
+## 可选安装 FlashAttention
 
-FlashAttention 不是项目必需项，但为了兼容已有实验环境，安装脚本仍保留
-显式开关。只有在明确需要时才使用：
+FlashAttention 不是本项目的必需依赖。只有在明确需要更快的 attention
+kernel 时，才按照官方仓库的硬件、CUDA 和 PyTorch 兼容性说明单独安装：
 
 ```bash
-INSTALL_FLASH_ATTN=1 bash install_llm_env.sh
+python -m pip install flash-attn --no-build-isolation
 ```
 
-不设置该变量，或设置为 `0`，都不会安装 FlashAttention。
+官方来源：[Dao-AILab/flash-attention](https://github.com/Dao-AILab/flash-attention)。
+安装前请以官方 README 的版本和平台要求为准；本项目默认仍使用 `sdpa`，
+即使不安装 FlashAttention 也可以完成训练、普通 eval 和 VE eval。
