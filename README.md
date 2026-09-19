@@ -266,7 +266,9 @@ GPU is available.
 
 Visual Enhancement is available as an optional evaluation mode. It draws the
 ground-truth boxes on support images only; query images are never annotated.
-The dedicated launcher uses four GPU workers and a separate output directory:
+The dedicated launcher evaluates ArTaxOr, Clipart1k, FISH, NEU-DET, UODD, and
+VISUALDIOR at 1/2/4 shots with four GPU workers, batch size 2, an 800x800
+maximum image budget, and a separate output directory:
 
 ```bash
 MODEL_PATH=weights/Qwen3-VL-4B-Instruct \
@@ -279,8 +281,8 @@ The same mode can be enabled for a single dataset with `--ve`, for example
 `SHOTS="1 2 4" NUM_GPUS=4 bash fewshot_eval/scripts/run_fish.sh --ve`. VE
 requires at least one support shot, so it cannot be combined with `--shots 0`.
 
-Results follow an MMDetection-style layout under
-`work_dirs/qwen3-vl-4b-base-fewshot/`: `evaluation.log`, `config.json`,
+Results follow an MMDetection-style layout under the selected `WORK_ROOT`
+(default `work_dirs/qwen3-vl-4b-ve-4gpu/` for the launcher): `evaluation.log`, `config.json`,
 `summary.json`, and one `episodes.json` plus `result.json` per dataset/shot.
 Use `SKIP_EXISTING=1` to resume completed entries. The main metric is
 `map_50_95`; `map_50`, `map_75`, ranking-mAP, raw responses, and parsed
