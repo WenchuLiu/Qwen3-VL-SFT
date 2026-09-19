@@ -21,6 +21,10 @@ Visual Enhancement uses the same few-shot evaluator:
 VE=1 bash scripts/evaluate_fewshot.sh
 ```
 
+Without `MAX_NEW_TOKENS`, the evaluator uses the dataset registry: VISUALDIOR
+gets 2,048 new tokens and all other registered cross-domain datasets get 1,024.
+Set `MAX_NEW_TOKENS` only when a deliberate global override is needed.
+
 Override external resources without editing scripts:
 
 ```bash

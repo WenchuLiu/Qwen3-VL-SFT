@@ -289,7 +289,8 @@ Run the launcher from the repository root; its default model, data, and output
 paths are project-relative.
 The canonical launcher evaluates ArTaxOr, Clipart1k, FISH, NEU-DET, UODD, and
 VISUALDIOR at 1/2/4 shots with four GPU workers, batch size 2, an 800x800
-maximum image budget, and a separate output directory:
+maximum image budget, and dataset-specific generation budgets (1,024 for all
+datasets except 2,048 for VISUALDIOR):
 
 ```bash
 VE=1 \

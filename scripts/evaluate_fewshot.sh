@@ -29,13 +29,11 @@ if [[ "${VE_MODE}" == "1" ]]; then
   DEFAULT_WORK_ROOT="work_dirs/qwen3-vl-4b-ve-fewshot"
   DEFAULT_NUM_GPUS=4
   DEFAULT_BATCH_SIZE=2
-  DEFAULT_MAX_NEW_TOKENS=1024
 else
   DEFAULT_SHOTS=(0 1 2 4)
   DEFAULT_WORK_ROOT="work_dirs/qwen3-vl-4b-fewshot"
   DEFAULT_NUM_GPUS=2
   DEFAULT_BATCH_SIZE=1
-  DEFAULT_MAX_NEW_TOKENS=""
 fi
 
 if [[ -n "${DATASETS:-}" ]]; then
@@ -54,7 +52,7 @@ NUM_GPUS="${NUM_GPUS:-${DEFAULT_NUM_GPUS}}"
 BATCH_SIZE="${BATCH_SIZE:-${DEFAULT_BATCH_SIZE}}"
 MIN_PIXELS="${MIN_PIXELS:-3136}"
 MAX_IMAGE_PIXELS="${MAX_IMAGE_PIXELS:-${MAX_PIXELS:-640000}}"
-MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-${DEFAULT_MAX_NEW_TOKENS}}"
+MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-}"
 MIN_BOX_AREA_RATIO="${MIN_BOX_AREA_RATIO:-0}"
 ATTENTION="${ATTENTION:-sdpa}"
 DEVICE="${DEVICE:-cuda:0}"
@@ -74,6 +72,11 @@ echo "batch_size=${BATCH_SIZE}"
 echo "max_image_pixels=${MAX_IMAGE_PIXELS}"
 echo "attention=${ATTENTION}"
 echo "seed=${SEED}"
+if [[ -n "${MAX_NEW_TOKENS}" ]]; then
+  echo "max_new_tokens_override=${MAX_NEW_TOKENS}"
+else
+  echo "max_new_tokens_policy=dataset-default (VISUALDIOR=2048, others=1024)"
+fi
 echo "visual_enhancement=${VE_MODE}"
 
 EVAL_ARGS=(
