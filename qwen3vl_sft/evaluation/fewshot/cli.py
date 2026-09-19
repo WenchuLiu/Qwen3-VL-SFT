@@ -66,6 +66,7 @@ def _generation_worker_loop(
     batch_size: int,
     min_pixels: int,
     max_pixels: int,
+    visual_enhancement: bool,
 ) -> None:
     """Load one model replica and process generation tasks until shutdown."""
     try:
@@ -97,6 +98,7 @@ def _generation_worker_loop(
                 min_pixels=min_pixels,
                 max_pixels=max_pixels,
                 max_new_tokens=max_new_tokens,
+                visual_enhancement=visual_enhancement,
                 progress_callback=report_progress,
             )
             result_queue.put((rank, task_id, responses, None))
@@ -117,6 +119,7 @@ class GenerationRunner:
         batch_size: int,
         min_pixels: int,
         max_pixels: int,
+        visual_enhancement: bool = False,
     ) -> None:
         import torch
 
@@ -127,6 +130,7 @@ class GenerationRunner:
         self.batch_size = batch_size
         self.min_pixels = min_pixels
         self.max_pixels = max_pixels
+        self.visual_enhancement = visual_enhancement
         self.task_id = 0
         self.parallel = num_gpus > 1
         self.model = None
@@ -166,6 +170,7 @@ class GenerationRunner:
                     batch_size,
                     min_pixels,
                     max_pixels,
+                    visual_enhancement,
                 ),
             )
             process.start()
@@ -190,6 +195,7 @@ class GenerationRunner:
                 min_pixels=self.min_pixels,
                 max_pixels=self.max_pixels,
                 max_new_tokens=max_new_tokens,
+                visual_enhancement=self.visual_enhancement,
             )
 
         task_id = self.task_id
@@ -328,6 +334,7 @@ def _evaluate_one(
     max_pixels: int,
     max_new_tokens: int,
     attention: str,
+    visual_enhancement: bool,
 ) -> dict:
     from qwen3vl_sft.evaluation.coco.generation import load_episodes, result_payload
 
@@ -349,6 +356,7 @@ def _evaluate_one(
         min_pixels=min_pixels,
         max_pixels=max_pixels,
         max_new_tokens=max_new_tokens,
+        visual_enhancement=visual_enhancement,
         coco_annotations_path=metadata.get("query_annotations"),
         runtime_seconds=time.monotonic() - started,
     )
@@ -423,6 +431,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip a dataset/shot when its result.json is already complete.",
     )
+    parser.add_argument(
+        "--ve",
+        "--visual-enhancement",
+        dest="visual_enhancement",
+        action="store_true",
+        help="Draw red ground-truth boxes on support images only.",
+    )
     return parser.parse_args()
 
 
@@ -439,6 +454,8 @@ def main() -> None:
     if args.max_query_pairs is not None and args.max_query_pairs < 1:
         raise ValueError("max query pairs must be positive")
     shots = parse_shots([str(value) for value in args.shots], allow_zero=True)
+    if args.visual_enhancement and 0 in shots:
+        raise ValueError("--ve/--visual-enhancement requires at least one support shot")
     work_dir = args.work_dir.expanduser().resolve()
     data_root = args.data_root.expanduser().resolve()
     model_path = (
@@ -496,6 +513,7 @@ def main() -> None:
             "attention": args.attention,
             "all_query_pairs": True,
             "max_query_pairs": args.max_query_pairs,
+            "visual_enhancement": args.visual_enhancement,
         },
     )
 
@@ -503,7 +521,11 @@ def main() -> None:
         task
         for task in tasks
         if not args.skip_existing
-        or not _result_is_complete(task["result"], task["max_new_tokens"])
+        or not _result_is_complete(
+            task["result"],
+            task["max_new_tokens"],
+            expected_visual_enhancement=args.visual_enhancement,
+        )
     ]
     if not pending:
         print(f"All requested results already exist under {work_dir}")
@@ -523,6 +545,7 @@ def main() -> None:
         batch_size=args.batch_size,
         min_pixels=args.min_pixels,
         max_pixels=args.max_pixels,
+        visual_enhancement=args.visual_enhancement,
     ) as runner:
         for task in pending:
             _build_manifest(
@@ -545,6 +568,7 @@ def main() -> None:
                 max_pixels=args.max_pixels,
                 max_new_tokens=task["max_new_tokens"],
                 attention=args.attention,
+                visual_enhancement=args.visual_enhancement,
             )
             shot_key = str(task["shot"])
             metrics = payload["metrics_by_shot"][shot_key]
@@ -553,6 +577,7 @@ def main() -> None:
             row = {
                 "dataset": task["dataset"],
                 "shot": task["shot"],
+                "ve": args.visual_enhancement,
                 "episodes": metrics["episodes"],
                 "map_50_95": model_map["map_50_95"],
                 "map_50": model_map["map_50"],

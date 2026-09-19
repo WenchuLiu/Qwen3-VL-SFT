@@ -64,6 +64,9 @@ if [[ -n "${EVAL_EPISODES}" ]]; then
     --coco-eval-max-new-tokens "${COCO_EVAL_MAX_NEW_TOKENS:-1024}"
   )
 fi
+if [[ "${VE:-0}" == "1" || "${VISUAL_ENHANCEMENT:-0}" == "1" ]]; then
+  ARGS+=(--ve)
+fi
 if [[ -n "${RESUME_FROM_CHECKPOINT:-}" ]]; then
   ARGS+=(--resume-from-checkpoint "${RESUME_FROM_CHECKPOINT}")
 fi

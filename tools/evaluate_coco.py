@@ -32,6 +32,13 @@ def main() -> None:
         choices=("sdpa", "flash_attention_2", "eager"),
         default="sdpa",
     )
+    parser.add_argument(
+        "--ve",
+        "--visual-enhancement",
+        dest="visual_enhancement",
+        action="store_true",
+        help="Draw red ground-truth boxes on support images only.",
+    )
     args = parser.parse_args()
     payload = evaluate_checkpoint(
         model_path=args.model_path,
@@ -43,6 +50,7 @@ def main() -> None:
         max_pixels=args.max_pixels,
         max_new_tokens=args.max_new_tokens,
         attention=args.attention,
+        visual_enhancement=args.visual_enhancement,
     )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

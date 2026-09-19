@@ -75,7 +75,12 @@ def dataset_image_roots(dataset_path: Path) -> tuple[Path, Path]:
     return support_root, query_root
 
 
-def result_is_complete(path: Path, expected_max_new_tokens: int | None = None) -> bool:
+def result_is_complete(
+    path: Path,
+    expected_max_new_tokens: int | None = None,
+    *,
+    expected_visual_enhancement: bool | None = None,
+) -> bool:
     """Return whether a cached result has the fields needed for reuse."""
     if not path.is_file():
         return False
@@ -85,6 +90,12 @@ def result_is_complete(path: Path, expected_max_new_tokens: int | None = None) -
         return False
     if not bool(payload.get("metrics_by_shot")) or "predictions" not in payload:
         return False
+    if expected_visual_enhancement is not None:
+        actual_visual_enhancement = bool(
+            payload.get("visual_enhancement", payload.get("ve", False))
+        )
+        if actual_visual_enhancement != expected_visual_enhancement:
+            return False
     return (
         expected_max_new_tokens is None
         or payload.get("max_new_tokens") == expected_max_new_tokens

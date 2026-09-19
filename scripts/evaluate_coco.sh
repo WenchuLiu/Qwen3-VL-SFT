@@ -12,9 +12,14 @@ ADAPTER_ARGS=()
 if [[ -n "${ADAPTER_PATH:-}" ]]; then
   ADAPTER_ARGS+=(--adapter-path "${ADAPTER_PATH}")
 fi
+VE_ARGS=()
+if [[ "${VE:-0}" == "1" || "${VISUAL_ENHANCEMENT:-0}" == "1" ]]; then
+  VE_ARGS+=(--ve)
+fi
 PYTHONPATH="${ROOT_DIR}:${PYTHONPATH:-}" "${PYTHON_BIN}" tools/evaluate_coco.py \
   --model-path "${MODEL_NAME_OR_PATH}" \
   "${ADAPTER_ARGS[@]}" \
+  "${VE_ARGS[@]}" \
   --episodes "${EPISODES}" \
   --output "${OUTPUT}" \
   --device "${DEVICE:-cuda:0}" \

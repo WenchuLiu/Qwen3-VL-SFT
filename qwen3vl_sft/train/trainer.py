@@ -265,6 +265,7 @@ class GenerationEvalTrainer(TrainingTelemetryTrainer):
         generation_eval_max_pixels: int,
         generation_eval_max_new_tokens: int,
         generation_eval_model_path: str,
+        generation_eval_visual_enhancement: bool = False,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -278,6 +279,7 @@ class GenerationEvalTrainer(TrainingTelemetryTrainer):
         self.generation_eval_max_pixels = generation_eval_max_pixels
         self.generation_eval_max_new_tokens = generation_eval_max_new_tokens
         self.generation_eval_model_path = generation_eval_model_path
+        self.generation_eval_visual_enhancement = generation_eval_visual_enhancement
 
     @staticmethod
     def _distributed() -> bool:
@@ -307,6 +309,7 @@ class GenerationEvalTrainer(TrainingTelemetryTrainer):
                         min_pixels=self.generation_eval_min_pixels,
                         max_pixels=self.generation_eval_max_pixels,
                         max_new_tokens=self.generation_eval_max_new_tokens,
+                        visual_enhancement=self.generation_eval_visual_enhancement,
                         coco_annotations_path=self.generation_eval_metadata.get(
                             "query_annotations"
                         ),
@@ -325,6 +328,7 @@ class GenerationEvalTrainer(TrainingTelemetryTrainer):
                     min_pixels=self.generation_eval_min_pixels,
                     max_pixels=self.generation_eval_max_pixels,
                     max_new_tokens=self.generation_eval_max_new_tokens,
+                    visual_enhancement=self.generation_eval_visual_enhancement,
                     coco_annotations_path=self.generation_eval_metadata.get(
                         "query_annotations"
                     ),
@@ -361,4 +365,3 @@ class GenerationEvalTrainer(TrainingTelemetryTrainer):
             self.args, self.state, self.control, payload["metrics"]
         )
         return payload["metrics"]
-

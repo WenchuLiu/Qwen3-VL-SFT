@@ -10,11 +10,14 @@ from __future__ import annotations
 import json
 from typing import Iterable, Mapping, Sequence
 
+from PIL import Image, ImageDraw
+
 from ...data.schema import validate_sft_record
 
 PROTOCOL_NAME = "positive_category_conditioned_icl"
 PROMPT_TEMPLATE_VERSION = "inst-v5"
 LOSS_MODE = "last_assistant"
+VE_BOX_COLOR = (255, 0, 0)
 
 TRAIN_SYSTEM_PROMPT = (
     "You are an object detection assistant. "
@@ -97,6 +100,66 @@ def _frame_boxes(frame: Mapping[str, object]) -> Sequence[Sequence[float]]:
     return boxes
 
 
+def _draw_visual_enhancement_boxes(
+    frame: Mapping[str, object],
+    *,
+    line_width: int = 4,
+) -> Image.Image:
+    """Load a support image and draw its normalized GT boxes in red.
+
+    VE is deliberately applied only to support frames.  The episode stores
+    boxes in Qwen's 0-1000 coordinate system, while PIL expects pixels, so
+    the frame's original width/height are used for the conversion.  Returning
+    a PIL image is supported by ``qwen-vl-utils`` and avoids writing temporary
+    annotated files into the dataset or evaluation output directories.
+    """
+    image_value = _frame_image(frame)
+    image_value = image_value.removeprefix("file://")
+    if "://" in image_value or image_value.startswith("data:"):
+        raise ValueError(
+            "visual enhancement requires local support images; "
+            f"cannot annotate {image_value!r}"
+        )
+
+    try:
+        with Image.open(image_value) as source:
+            annotated = source.convert("RGB").copy()
+    except (OSError, ValueError) as error:
+        raise ValueError(
+            f"could not load local support image for visual enhancement: {image_value}"
+        ) from error
+
+    try:
+        frame_width = float(frame.get("width", annotated.width))
+        frame_height = float(frame.get("height", annotated.height))
+    except (TypeError, ValueError):
+        frame_width = float(annotated.width)
+        frame_height = float(annotated.height)
+    if frame_width <= 0 or frame_height <= 0:
+        raise ValueError(
+            "support frame width and height must be positive for visual enhancement"
+        )
+
+    draw = ImageDraw.Draw(annotated)
+    width, height = annotated.size
+    line_width = max(1, int(line_width))
+    for box in _frame_boxes(frame):
+        try:
+            if len(box) != 4:
+                continue
+            x1, y1, x2, y2 = [float(value) for value in box]
+        except (TypeError, ValueError):
+            continue
+        x1 = max(0, min(width - 1, round(x1 / 1000.0 * frame_width)))
+        y1 = max(0, min(height - 1, round(y1 / 1000.0 * frame_height)))
+        x2 = max(0, min(width - 1, round(x2 / 1000.0 * frame_width)))
+        y2 = max(0, min(height - 1, round(y2 / 1000.0 * frame_height)))
+        if x2 <= x1 or y2 <= y1:
+            continue
+        draw.rectangle((x1, y1, x2, y2), outline=VE_BOX_COLOR, width=line_width)
+    return annotated
+
+
 def build_sft_record(
     *,
     record_id: str,
@@ -145,11 +208,14 @@ def build_eval_messages(
     *,
     min_pixels: int,
     max_pixels: int,
+    visual_enhancement: bool = False,
 ) -> list[dict]:
     """Build the generation prompt for one fixed episode.
 
     Support turns retain the score-free SFT schema.  The final query answer is
     omitted and its prompt explicitly requests model-estimated confidence.
+    When ``visual_enhancement`` is enabled, red ground-truth boxes are drawn
+    on support images only; the query image is never annotated.
     """
     category = record.get("category")
     support = record.get("support")
@@ -177,7 +243,11 @@ def build_eval_messages(
                     "content": [
                         {
                             "type": "image",
-                            "image": _frame_image(frame),
+                            "image": (
+                                _draw_visual_enhancement_boxes(frame)
+                                if visual_enhancement
+                                else _frame_image(frame)
+                            ),
                             "min_pixels": min_pixels,
                             "max_pixels": max_pixels,
                         },

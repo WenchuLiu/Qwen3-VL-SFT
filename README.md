@@ -133,6 +133,38 @@ Override these defaults with `SWANLAB_PROJECT`, `RUN_NAME`, `REPORT_TO`, or
 `NUM_TRAIN_EPOCHS`. Keep `SWANLAB_API_KEY` in the environment; do not store it
 in a script or configuration committed to Git.
 
+## Score-aware GRPO fine-tuning
+
+The repository also includes a standalone multimodal GRPO path modeled after
+`../Visual-RFT`. It samples several answers for each prompt, computes a
+group-relative reward, and updates the policy with a KL penalty. The default
+reward is the sum of:
+
+- one-to-one box IoU reward;
+- score reward: high score for an IoU-matched box and low score for an
+  unmatched box;
+- a format reward requiring a parseable detection list with explicit
+  `score` fields.
+
+Existing COCO `train_sft.json` records can be used directly. The GRPO loader
+removes the final supervised answer, changes the final query to request
+confidence scores, and keeps the answer's boxes as reward targets.
+
+```bash
+MODEL_NAME_OR_PATH=Qwen/Qwen3-VL-4B-Instruct \
+DATASET=data/coco/train_sft.json \
+OUTPUT_DIR=runs/coco-grpo \
+NPROC_PER_NODE=2 \
+bash scripts/train_grpo.sh
+```
+
+The direct entry point is `python -m qwen3vl_sft.train.grpo`. Useful controls
+include `--num-generations`, `--max-completion-length`, `--kl-coef`,
+`--iou-threshold`, and `--reward-functions iou score format`. LoRA is enabled
+by default, so the initial policy can be used as the KL reference by disabling
+the adapter; full-parameter GRPO creates a frozen reference copy automatically
+or can load one explicitly with `--reference-model-name-or-path`.
+
 For ordinary held-out language-model validation:
 
 ```bash
@@ -231,6 +263,21 @@ launcher: `run_artaxor.sh`, `run_clipart1k.sh`, `run_fish.sh`, `run_neudet.sh`,
 Each launcher defaults to two persistent GPU workers (`cuda:0` and `cuda:1`),
 each with its own 4B model replica. Override with `NUM_GPUS=1` when only one
 GPU is available.
+
+Visual Enhancement is available as an optional evaluation mode. It draws the
+ground-truth boxes on support images only; query images are never annotated.
+The dedicated launcher uses four GPU workers and a separate output directory:
+
+```bash
+MODEL_PATH=weights/Qwen3-VL-4B-Instruct \
+DATA_ROOT=data \
+NUM_GPUS=4 \
+bash fewshot_eval/scripts/run_ve.sh
+```
+
+The same mode can be enabled for a single dataset with `--ve`, for example
+`SHOTS="1 2 4" NUM_GPUS=4 bash fewshot_eval/scripts/run_fish.sh --ve`. VE
+requires at least one support shot, so it cannot be combined with `--shots 0`.
 
 Results follow an MMDetection-style layout under
 `work_dirs/qwen3-vl-4b-base-fewshot/`: `evaluation.log`, `config.json`,

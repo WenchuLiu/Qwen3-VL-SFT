@@ -50,3 +50,30 @@ schedule.
 LoRA is the default. Disable it with `--lora-enable false` and explicitly
 select the modules to tune with `--tune-mm-vision`, `--tune-mm-mlp`, and
 `--tune-mm-llm`.
+
+## Score-aware GRPO
+
+Use the standalone GRPO entry point for reinforcement learning:
+
+```bash
+MODEL_NAME_OR_PATH=Qwen/Qwen3-VL-4B-Instruct \
+DATASET=data/coco/train_sft.json \
+OUTPUT_DIR=runs/qwen3vl-grpo \
+bash scripts/train_grpo.sh
+```
+
+`qwen3vl_sft.train.grpo_data` accepts the repository's SFT conversation
+records, COCO episode records with `support`/`query`, and generic records with
+a conversational `prompt`. The final answer is not fed to the model during a
+rollout. Its boxes are attached as reward metadata, while the final prompt is
+rewritten to request `bbox_2d`, `label`, and a confidence `score` in `[0, 1]`.
+
+The default registry is `iou score format`. IoU uses greedy one-to-one
+matching at `--iou-threshold`; the score reward gives matched detections their
+emitted score and unmatched detections `1 - score`. Missing score fields get
+zero score reward. Group advantages are normalized over
+`--num-generations` samples and optimized with the sampled-token policy loss
+plus `--kl-coef` KL regularization.
+
+This first GRPO path intentionally has no generation-based validation loop;
+run the existing fixed-episode COCO evaluator after each saved checkpoint.

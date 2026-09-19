@@ -3,3 +3,6 @@
 This directory follows the reference project's `shell/` convention. The
 canonical reusable scripts remain in `scripts/`; these wrappers make the
 common commands discoverable without duplicating experiment logic.
+
+This includes `shell/train_grpo.sh`, the wrapper for score-aware multimodal
+GRPO training.

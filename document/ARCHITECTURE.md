@@ -19,7 +19,11 @@ qwen3vl_sft/
 │   ├── collator.py               # padding and vision tensor merging
 │   ├── data.py                   # Trainer data-module assembly
 │   ├── trainer.py                # public Trainer boundary
-│   └── runner.py                 # end-to-end training orchestration
+│   ├── grpo_data.py              # prompt-only rollout data and targets
+│   ├── grpo_trainer.py           # multimodal group-relative policy loss
+│   ├── rewards.py                # IoU, score, and format rewards
+│   ├── grpo_runner.py            # GRPO orchestration
+│   └── runner.py                 # SFT orchestration
 └── evaluation/
     ├── coco/                     # fixed protocol, episodes, generation, metrics
     └── fewshot/                  # cross-domain benchmark application
@@ -32,6 +36,7 @@ arguments -> runner -> {model, train.data, train.trainer}
 train.data -> {data.processing, data.messages, data.rope}
 evaluation.coco -> {data.schema, no training runtime}
 evaluation.fewshot -> evaluation.coco
+train.grpo_runner -> {model, train.grpo_data, train.grpo_trainer, train.rewards}
 ```
 
 The flat modules (`config.py`, `modeling.py`, `data/preprocess.py`, and the
@@ -48,6 +53,11 @@ making each responsibility discoverable from the directory tree.
    conversation and creates assistant-only labels.
 4. `train.trainer` runs loss evaluation or the fixed COCO generation protocol.
 5. `model.loader` saves the model/adapter and processor side by side.
+
+The standalone GRPO flow starts at `train.grpo_runner`: it turns the final
+answer of an SFT/COCO record into reward metadata, samples multiple
+completions, and applies the group-relative policy loss with a frozen/reference
+policy KL term. It does not change the SFT flow above.
 
 The COCO prompt is defined once in `evaluation/coco/protocol.py`. Dataset
 builders, standalone evaluation, and in-training evaluation all consume that

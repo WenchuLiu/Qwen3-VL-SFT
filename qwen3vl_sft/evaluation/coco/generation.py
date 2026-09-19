@@ -88,9 +88,15 @@ def generate_responses(
     min_pixels: int,
     max_pixels: int,
     max_new_tokens: int,
+    visual_enhancement: bool = False,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> list[str]:
-    """Generate deterministic responses for fixed episodes."""
+    """Generate deterministic responses for fixed episodes.
+
+    ``visual_enhancement`` annotates support images with their GT boxes while
+    leaving the query image untouched.  The flag is optional so the baseline
+    prompt and all existing callers remain unchanged.
+    """
     import torch
 
     if batch_size < 1 or max_new_tokens < 1:
@@ -126,6 +132,7 @@ def generate_responses(
                     record,
                     min_pixels=min_pixels,
                     max_pixels=max_pixels,
+                    visual_enhancement=visual_enhancement,
                 )
                 for record in batch
             ]
@@ -184,6 +191,7 @@ def evaluate_loaded_model(
     min_pixels: int,
     max_pixels: int,
     max_new_tokens: int,
+    visual_enhancement: bool = False,
     coco_annotations_path: str | None = None,
 ) -> dict:
     responses = generate_responses(
@@ -195,6 +203,7 @@ def evaluate_loaded_model(
         min_pixels=min_pixels,
         max_pixels=max_pixels,
         max_new_tokens=max_new_tokens,
+        visual_enhancement=visual_enhancement,
     )
     return evaluate_episode_predictions(
         records,
@@ -214,6 +223,7 @@ def result_payload(
     min_pixels: int,
     max_pixels: int,
     max_new_tokens: int,
+    visual_enhancement: bool = False,
     coco_annotations_path: str | None = None,
     runtime_seconds: float | None = None,
 ) -> dict:
@@ -235,6 +245,10 @@ def result_payload(
         "min_pixels": min_pixels,
         "max_pixels": max_pixels,
         "max_new_tokens": max_new_tokens,
+        "visual_enhancement": bool(visual_enhancement),
+        # Keep the short name used by the original VE evaluator available for
+        # downstream result consumers.
+        "ve": bool(visual_enhancement),
         "coco_annotations_path": coco_annotations_path,
         "runtime_seconds": runtime_seconds,
         **result,
@@ -252,6 +266,7 @@ def evaluate_checkpoint(
     max_pixels: int,
     max_new_tokens: int,
     attention: str,
+    visual_enhancement: bool = False,
 ) -> dict:
     import torch
     from transformers import AutoModelForImageTextToText, AutoProcessor
@@ -281,6 +296,7 @@ def evaluate_checkpoint(
         min_pixels=min_pixels,
         max_pixels=max_pixels,
         max_new_tokens=max_new_tokens,
+        visual_enhancement=visual_enhancement,
         coco_annotations_path=coco_annotations_path,
     )
     return result_payload(
@@ -293,7 +309,7 @@ def evaluate_checkpoint(
         min_pixels=min_pixels,
         max_pixels=max_pixels,
         max_new_tokens=max_new_tokens,
+        visual_enhancement=visual_enhancement,
         coco_annotations_path=coco_annotations_path,
         runtime_seconds=time.monotonic() - started,
     )
-

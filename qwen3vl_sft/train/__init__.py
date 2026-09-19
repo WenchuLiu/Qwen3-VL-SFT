@@ -2,7 +2,8 @@
 
 The package is intentionally lazy at import time: lightweight tools such as
 dataset builders can inspect argument defaults without importing PyTorch or
-Transformers.  The executable entry point is ``python -m qwen3vl_sft.train``.
+Transformers. The SFT entry point is ``python -m qwen3vl_sft.train``; the
+score-aware GRPO entry point is ``python -m qwen3vl_sft.train.grpo``.
 """
 
 

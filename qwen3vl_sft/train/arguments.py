@@ -54,6 +54,16 @@ def add_data_arguments(parser: argparse.ArgumentParser) -> None:
         "--eval-mode", choices=("none", "loss", "generation"), default="none",
         help="none: no eval; loss: teacher-forced LM loss; generation: fixed episode F1 and mAP.",
     )
+    group.add_argument(
+        "--ve",
+        "--visual-enhancement",
+        dest="visual_enhancement",
+        type=str_to_bool,
+        nargs="?",
+        const=True,
+        default=False,
+        help="Draw red ground-truth boxes on support images during generation eval.",
+    )
     group.add_argument("--eval-ratio", type=float, default=0.0)
     group.add_argument("--eval-seed", type=int, default=42)
     group.add_argument("--model-max-length", type=int, default=8192)
@@ -129,6 +139,52 @@ def build_train_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def add_grpo_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add rollout and reward arguments for score-aware GRPO training."""
+    group = parser.add_argument_group("GRPO rollout and rewards")
+    group.add_argument(
+        "--reward-functions",
+        nargs="+",
+        default=["iou", "score", "format"],
+        help=(
+            "Reward functions to sum. Available values include iou, score, "
+            "confidence, format, accuracy_iou, and accuracy_confidence."
+        ),
+    )
+    group.add_argument("--num-generations", type=int, default=4)
+    group.add_argument("--max-prompt-length", type=int, default=4096)
+    group.add_argument("--max-completion-length", type=int, default=512)
+    group.add_argument("--temperature", type=float, default=1.0)
+    group.add_argument("--top-p", type=float, default=1.0)
+    group.add_argument("--top-k", type=int, default=0)
+    group.add_argument(
+        "--kl-coef",
+        type=float,
+        default=0.04,
+        help="KL penalty against the frozen base policy; set to 0 to disable it.",
+    )
+    group.add_argument("--iou-threshold", type=float, default=0.5)
+    group.add_argument("--iou-reward-weight", type=float, default=1.0)
+    group.add_argument("--score-reward-weight", type=float, default=1.0)
+    group.add_argument("--format-reward-weight", type=float, default=1.0)
+    group.add_argument(
+        "--reference-model-name-or-path",
+        default=None,
+        help="Optional frozen reference checkpoint for full-parameter GRPO.",
+    )
+
+
+def build_grpo_parser() -> argparse.ArgumentParser:
+    """Build the standalone multimodal GRPO command-line parser."""
+    parser = argparse.ArgumentParser(
+        description="Train Qwen3-VL with score-aware multimodal GRPO."
+    )
+    add_data_arguments(parser)
+    add_training_arguments(parser)
+    add_grpo_arguments(parser)
+    return parser
+
+
 def data_config_from_args(args: argparse.Namespace) -> DataConfig:
     return DataConfig(
         dataset=args.dataset,
@@ -146,4 +202,3 @@ def data_config_from_args(args: argparse.Namespace) -> DataConfig:
         video_max_frames=args.video_max_frames,
         video_fps=args.video_fps,
     )
-
