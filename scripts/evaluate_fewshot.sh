@@ -2,8 +2,7 @@
 set -euo pipefail
 
 # Canonical launcher for the cross-domain few-shot benchmark.
-# Set VE=1 for Visual Enhancement; VE is a generation-prompt option, not a
-# separate evaluator implementation.
+# Set VE=1 for Visual Enhancement and IE=1 for instruction enhancement.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
@@ -14,21 +13,47 @@ DATA_ROOT="${DATA_ROOT:-data}"
 DEFAULT_DATASETS=(ArTaxOr clipart1k FISH NEU-DET UODD VISUALDIOR)
 VE_MODE=0
 VE_FLAG_IN_ARGS=0
+IE_MODE=0
+IE_FLAG_IN_ARGS=0
+CATEGORY_DESCRIPTIONS_FLAG_IN_ARGS=0
 if [[ "${VE:-0}" == "1" || "${VISUAL_ENHANCEMENT:-0}" == "1" ]]; then
   VE_MODE=1
+fi
+if [[ "${IE:-0}" == "1" || "${INSTRUCTION_ENHANCEMENT:-0}" == "1" ]]; then
+  IE_MODE=1
+fi
+if [[ -n "${CATEGORY_DESCRIPTIONS:-}" ]]; then
+  IE_MODE=1
 fi
 for argument in "$@"; do
   if [[ "${argument}" == "--ve" || "${argument}" == "--visual-enhancement" ]]; then
     VE_MODE=1
     VE_FLAG_IN_ARGS=1
   fi
+  if [[ "${argument}" == "--ie" || "${argument}" == "--instruction-enhancement" ]]; then
+    IE_MODE=1
+    IE_FLAG_IN_ARGS=1
+  fi
+  if [[ "${argument}" == "--category-descriptions" || "${argument}" == --category-descriptions=* ]]; then
+    IE_MODE=1
+    CATEGORY_DESCRIPTIONS_FLAG_IN_ARGS=1
+  fi
 done
 
 if [[ "${VE_MODE}" == "1" ]]; then
   DEFAULT_SHOTS=(1 2 4)
-  EVAL_ID="${EVAL_ID:-qwen3-vl-4b-ve-fewshot}"
+  if [[ "${IE_MODE}" == "1" ]]; then
+    EVAL_ID="${EVAL_ID:-qwen3-vl-4b-ve-ie-fewshot}"
+  else
+    EVAL_ID="${EVAL_ID:-qwen3-vl-4b-ve-fewshot}"
+  fi
   DEFAULT_NUM_GPUS=4
   DEFAULT_BATCH_SIZE=2
+elif [[ "${IE_MODE}" == "1" ]]; then
+  DEFAULT_SHOTS=(0 1 2 4)
+  EVAL_ID="${EVAL_ID:-qwen3-vl-4b-ie-fewshot}"
+  DEFAULT_NUM_GPUS=2
+  DEFAULT_BATCH_SIZE=1
 else
   DEFAULT_SHOTS=(0 1 2 4)
   EVAL_ID="${EVAL_ID:-qwen3-vl-4b-fewshot}"
@@ -79,6 +104,10 @@ else
   echo "max_new_tokens_policy=dataset-default (VISUALDIOR=2048, others=1024)"
 fi
 echo "visual_enhancement=${VE_MODE}"
+echo "instruction_enhancement=${IE_MODE}"
+if [[ -n "${CATEGORY_DESCRIPTIONS:-}" ]]; then
+  echo "category_descriptions=${CATEGORY_DESCRIPTIONS}"
+fi
 
 EVAL_ARGS=(
   tools/evaluate_fewshot.py
@@ -101,6 +130,12 @@ if [[ -n "${MAX_NEW_TOKENS}" ]]; then
 fi
 if [[ "${VE_MODE}" == "1" && "${VE_FLAG_IN_ARGS}" == "0" ]]; then
   EVAL_ARGS+=(--ve)
+fi
+if [[ "${IE_MODE}" == "1" && "${IE_FLAG_IN_ARGS}" == "0" ]]; then
+  EVAL_ARGS+=(--instruction-enhancement)
+fi
+if [[ -n "${CATEGORY_DESCRIPTIONS:-}" && "${CATEGORY_DESCRIPTIONS_FLAG_IN_ARGS}" == "0" ]]; then
+  EVAL_ARGS+=(--category-descriptions "${CATEGORY_DESCRIPTIONS}")
 fi
 if [[ -n "${MAX_QUERY_PAIRS:-}" ]]; then
   EVAL_ARGS+=(--max-query-pairs "${MAX_QUERY_PAIRS}")

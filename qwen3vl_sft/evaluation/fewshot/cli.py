@@ -29,8 +29,14 @@ from qwen3vl_sft.evaluation.coco.data import (
     parse_shots,
     write_json,
 )
-from qwen3vl_sft.evaluation.coco.protocol import PROTOCOL_NAME, PROMPT_TEMPLATE_VERSION
+from qwen3vl_sft.evaluation.coco.generation import file_sha256
 from qwen3vl_sft.evaluation.coco.metrics import evaluate_episode_predictions
+from qwen3vl_sft.evaluation.coco.protocol import (
+    PROMPT_TEMPLATE_VERSION,
+    PROTOCOL_NAME,
+    load_category_descriptions,
+)
+
 from .config import (
     DEFAULT_DATASETS,
     _dataset_dir,
@@ -67,6 +73,8 @@ def _generation_worker_loop(
     min_pixels: int,
     max_pixels: int,
     visual_enhancement: bool,
+    instruction_enhancement: bool = False,
+    category_descriptions: dict[str, str] | None = None,
 ) -> None:
     """Load one model replica and process generation tasks until shutdown."""
     try:
@@ -99,6 +107,8 @@ def _generation_worker_loop(
                 max_pixels=max_pixels,
                 max_new_tokens=max_new_tokens,
                 visual_enhancement=visual_enhancement,
+                instruction_enhancement=instruction_enhancement,
+                category_descriptions=category_descriptions,
                 progress_callback=report_progress,
             )
             result_queue.put((rank, task_id, responses, None))
@@ -120,6 +130,8 @@ class GenerationRunner:
         min_pixels: int,
         max_pixels: int,
         visual_enhancement: bool = False,
+        instruction_enhancement: bool = False,
+        category_descriptions: dict[str, str] | None = None,
     ) -> None:
         import torch
 
@@ -131,6 +143,8 @@ class GenerationRunner:
         self.min_pixels = min_pixels
         self.max_pixels = max_pixels
         self.visual_enhancement = visual_enhancement
+        self.instruction_enhancement = instruction_enhancement
+        self.category_descriptions = category_descriptions
         self.task_id = 0
         self.parallel = num_gpus > 1
         self.model = None
@@ -171,6 +185,8 @@ class GenerationRunner:
                     min_pixels,
                     max_pixels,
                     visual_enhancement,
+                    instruction_enhancement,
+                    category_descriptions,
                 ),
             )
             process.start()
@@ -196,6 +212,8 @@ class GenerationRunner:
                 max_pixels=self.max_pixels,
                 max_new_tokens=max_new_tokens,
                 visual_enhancement=self.visual_enhancement,
+                instruction_enhancement=self.instruction_enhancement,
+                category_descriptions=self.category_descriptions,
             )
 
         task_id = self.task_id
@@ -335,6 +353,9 @@ def _evaluate_one(
     max_new_tokens: int,
     attention: str,
     visual_enhancement: bool,
+    instruction_enhancement: bool = False,
+    category_descriptions_path: str | None = None,
+    category_descriptions_sha256: str | None = None,
 ) -> dict:
     from qwen3vl_sft.evaluation.coco.generation import load_episodes, result_payload
 
@@ -357,6 +378,9 @@ def _evaluate_one(
         max_pixels=max_pixels,
         max_new_tokens=max_new_tokens,
         visual_enhancement=visual_enhancement,
+        instruction_enhancement=instruction_enhancement,
+        category_descriptions_path=category_descriptions_path,
+        category_descriptions_sha256=category_descriptions_sha256,
         coco_annotations_path=metadata.get("query_annotations"),
         runtime_seconds=time.monotonic() - started,
     )
@@ -438,6 +462,22 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Draw red ground-truth boxes on support images only.",
     )
+    parser.add_argument(
+        "--ie",
+        "--instruction-enhancement",
+        dest="instruction_enhancement",
+        action="store_true",
+        help="Add the requested category description to support and query instructions.",
+    )
+    parser.add_argument(
+        "--category-descriptions",
+        type=Path,
+        default=None,
+        help=(
+            "JSON mapping from category name to visual description; required with "
+            "--instruction-enhancement for local few-shot datasets."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -456,6 +496,18 @@ def main() -> None:
     shots = parse_shots([str(value) for value in args.shots], allow_zero=True)
     if args.visual_enhancement and 0 in shots:
         raise ValueError("--ve/--visual-enhancement requires at least one support shot")
+    if args.instruction_enhancement and args.category_descriptions is None:
+        raise ValueError(
+            "--ie/--instruction-enhancement requires --category-descriptions "
+            "for local few-shot evaluation"
+        )
+    category_descriptions_path = None
+    category_descriptions = None
+    category_descriptions_sha256 = None
+    if args.category_descriptions is not None:
+        category_descriptions_path = args.category_descriptions.expanduser().resolve()
+        category_descriptions = load_category_descriptions(category_descriptions_path)
+        category_descriptions_sha256 = file_sha256(category_descriptions_path)
     work_dir = args.work_dir.expanduser().resolve()
     data_root = args.data_root.expanduser().resolve()
     model_path = (
@@ -514,6 +566,11 @@ def main() -> None:
             "all_query_pairs": True,
             "max_query_pairs": args.max_query_pairs,
             "visual_enhancement": args.visual_enhancement,
+            "instruction_enhancement": args.instruction_enhancement,
+            "category_descriptions_path": (
+                str(category_descriptions_path) if category_descriptions_path else None
+            ),
+            "category_descriptions_sha256": category_descriptions_sha256,
         },
     )
 
@@ -525,6 +582,10 @@ def main() -> None:
             task["result"],
             task["max_new_tokens"],
             expected_visual_enhancement=args.visual_enhancement,
+            expected_instruction_enhancement=args.instruction_enhancement,
+            expected_category_descriptions_sha256=(
+                category_descriptions_sha256 if args.instruction_enhancement else None
+            ),
         )
     ]
     if not pending:
@@ -546,6 +607,8 @@ def main() -> None:
         min_pixels=args.min_pixels,
         max_pixels=args.max_pixels,
         visual_enhancement=args.visual_enhancement,
+        instruction_enhancement=args.instruction_enhancement,
+        category_descriptions=category_descriptions,
     ) as runner:
         for task in pending:
             _build_manifest(
@@ -569,6 +632,11 @@ def main() -> None:
                 max_new_tokens=task["max_new_tokens"],
                 attention=args.attention,
                 visual_enhancement=args.visual_enhancement,
+                instruction_enhancement=args.instruction_enhancement,
+                category_descriptions_path=(
+                    str(category_descriptions_path) if category_descriptions_path else None
+                ),
+                category_descriptions_sha256=category_descriptions_sha256,
             )
             shot_key = str(task["shot"])
             metrics = payload["metrics_by_shot"][shot_key]
@@ -578,6 +646,8 @@ def main() -> None:
                 "dataset": task["dataset"],
                 "shot": task["shot"],
                 "ve": args.visual_enhancement,
+                "ie": args.instruction_enhancement,
+                "instruction_enhancement": args.instruction_enhancement,
                 "episodes": metrics["episodes"],
                 "map_50_95": model_map["map_50_95"],
                 "map_50": model_map["map_50"],

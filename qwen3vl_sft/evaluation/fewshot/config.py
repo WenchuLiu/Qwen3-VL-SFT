@@ -80,6 +80,8 @@ def result_is_complete(
     expected_max_new_tokens: int | None = None,
     *,
     expected_visual_enhancement: bool | None = None,
+    expected_instruction_enhancement: bool | None = None,
+    expected_category_descriptions_sha256: str | None = None,
 ) -> bool:
     """Return whether a cached result has the fields needed for reuse."""
     if not path.is_file():
@@ -96,6 +98,18 @@ def result_is_complete(
         )
         if actual_visual_enhancement != expected_visual_enhancement:
             return False
+    if expected_instruction_enhancement is not None:
+        actual_instruction_enhancement = bool(
+            payload.get("instruction_enhancement", payload.get("ie", False))
+        )
+        if actual_instruction_enhancement != expected_instruction_enhancement:
+            return False
+    if (
+        expected_category_descriptions_sha256 is not None
+        and payload.get("category_descriptions_sha256")
+        != expected_category_descriptions_sha256
+    ):
+        return False
     return (
         expected_max_new_tokens is None
         or payload.get("max_new_tokens") == expected_max_new_tokens

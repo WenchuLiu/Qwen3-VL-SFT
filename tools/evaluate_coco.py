@@ -39,6 +39,21 @@ def main() -> None:
         action="store_true",
         help="Draw red ground-truth boxes on support images only.",
     )
+    parser.add_argument(
+        "--ie",
+        "--instruction-enhancement",
+        dest="instruction_enhancement",
+        action="store_true",
+        help="Add the requested category description to support and query instructions.",
+    )
+    parser.add_argument(
+        "--category-descriptions",
+        default=None,
+        help=(
+            "JSON mapping from category name to visual description. Required for "
+            "instruction enhancement unless descriptions are embedded in episodes."
+        ),
+    )
     args = parser.parse_args()
     payload = evaluate_checkpoint(
         model_path=args.model_path,
@@ -51,6 +66,8 @@ def main() -> None:
         max_new_tokens=args.max_new_tokens,
         attention=args.attention,
         visual_enhancement=args.visual_enhancement,
+        instruction_enhancement=args.instruction_enhancement,
+        category_descriptions_path=args.category_descriptions,
     )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

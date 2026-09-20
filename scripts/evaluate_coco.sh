@@ -18,10 +18,18 @@ VE_ARGS=()
 if [[ "${VE:-0}" == "1" || "${VISUAL_ENHANCEMENT:-0}" == "1" ]]; then
   VE_ARGS+=(--ve)
 fi
+IE_ARGS=()
+if [[ "${IE:-0}" == "1" || "${INSTRUCTION_ENHANCEMENT:-0}" == "1" || -n "${CATEGORY_DESCRIPTIONS:-}" ]]; then
+  IE_ARGS+=(--instruction-enhancement)
+  if [[ -n "${CATEGORY_DESCRIPTIONS:-}" ]]; then
+    IE_ARGS+=(--category-descriptions "${CATEGORY_DESCRIPTIONS}")
+  fi
+fi
 PYTHONPATH="${ROOT_DIR}:${PYTHONPATH:-}" "${PYTHON_BIN}" tools/evaluate_coco.py \
   --model-path "${MODEL_NAME_OR_PATH}" \
   "${ADAPTER_ARGS[@]}" \
   "${VE_ARGS[@]}" \
+  "${IE_ARGS[@]}" \
   --episodes "${EPISODES}" \
   --output "${OUTPUT}" \
   --device "${DEVICE:-cuda:0}" \

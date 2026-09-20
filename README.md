@@ -40,9 +40,10 @@ implementation.
 The source of truth for the COCO protocol is
 `qwen3vl_sft/evaluation/coco/protocol.py`; the older flat module path is a
 compatibility facade. Do not copy its prompt into a shell script or a second
-evaluator. The default and only supported prompt template is `inst-v5`: SFT
-targets omit confidence, while the final evaluation query asks
-the model to estimate confidence for each predicted box.
+evaluator. The default baseline prompt template is `inst-v5`; the optional IE
+variant appends a category description at inference time. SFT targets omit
+confidence, while the final evaluation query asks the model to estimate
+confidence for each predicted box.
 
 The main training command is now the package entry point:
 
@@ -310,6 +311,39 @@ The same mode can be selected for one dataset with
 `VE=1 DATASETS=FISH SHOTS="1 2 4" bash scripts/evaluate_fewshot.sh`. The old
 `scripts/cross_domain_datasets/run_ve.sh` path remains a compatibility wrapper. VE
 requires at least one support shot, so it cannot be combined with `SHOTS="0"`.
+
+Instruction Enhancement is a separate training-free prompt variant. It adds a
+user-provided visual description of the requested category to every support and
+query instruction; it does not change images, weights, or the evaluation
+metric. The description file is a JSON object mapping category names to English
+descriptions, optionally wrapped under `descriptions` (see
+`docs/category_descriptions.example.json`):
+
+```bash
+IE=1 \
+CATEGORY_DESCRIPTIONS=docs/category_descriptions.example.json \
+DATASETS=FISH SHOTS="0 1 2 4" \
+MODEL_PATH=weights/Qwen3-VL-4B-Instruct \
+DATA_ROOT=data NUM_GPUS=1 \
+bash scripts/evaluate_fewshot.sh
+```
+
+Every category appearing in the selected episodes must have a description.
+IE also works with `VE=1` to test the combined visual-and-instruction variant;
+the result records `instruction_enhancement` and the description-file hash so
+cached baseline, VE, and IE runs remain distinguishable.
+The compatibility wrapper `scripts/cross_domain_datasets/run_ie.sh` sets
+`IE=1` for existing launcher workflows.
+
+For all six registered cross-domain datasets, use the complete 57-category
+mapping generated for this benchmark:
+
+```bash
+IE=1 \
+CATEGORY_DESCRIPTIONS=docs/cross_domain_category_descriptions.json \
+MODEL_PATH=weights/Qwen3-VL-4B-Instruct DATA_ROOT=data NUM_GPUS=4 \
+bash scripts/evaluate_fewshot.sh
+```
 
 Results follow an MMDetection-style layout under the selected `WORK_ROOT`
 (default `outputs/eval/fewshot/qwen3-vl-4b-ve-fewshot/` for VE): `evaluation.log`, `config.json`,

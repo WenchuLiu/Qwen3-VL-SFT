@@ -8,6 +8,7 @@ scores.  Both paths live here so their intentional difference remains explicit.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
 from PIL import Image, ImageDraw
@@ -46,16 +47,30 @@ def build_question(
     *,
     query: bool = False,
     include_confidence: bool = False,
+    category_description: str | None = None,
 ) -> str:
-    """Build the canonical category-conditioned grounding question."""
+    """Build the canonical category-conditioned grounding question.
+
+    ``category_description`` is intentionally optional.  Keeping it out of
+    the default path makes the original baseline prompt byte-for-byte
+    compatible, while callers can add a natural-language description for a
+    training-free instruction-enhancement experiment.
+    """
     if not isinstance(category, str) or not category.strip():
         raise ValueError("category must be a non-empty string")
     category = category.strip()
+    if category_description is not None:
+        if not isinstance(category_description, str) or not category_description.strip():
+            raise ValueError("category_description must be a non-empty string when provided")
+        category_description = category_description.strip()
+        target = f"{category} (visual description: {category_description})"
+    else:
+        target = category
     prefix = "Using the preceding in-context examples, " if query else ""
     image_phrase = "the query image" if query else "the image"
     verb = "locate" if query else "Locate"
     question = (
-        f"{prefix}{verb} all of the following objects: {category} in "
+        f"{prefix}{verb} all of the following objects: {target} in "
         f"{image_phrase} and output all detections as a JSON list like "
     )
     if include_confidence:
@@ -66,6 +81,77 @@ def build_question(
             "descending confidence."
         )
     return question + '[{"bbox_2d":[x1,y1,x2,y2],"label":"class_name"}].'
+
+
+def load_category_descriptions(path: str | Path) -> dict[str, str]:
+    """Load a category-to-description mapping from a JSON file.
+
+    Both of these forms are accepted so a small ad-hoc mapping and a versioned
+    experiment config are equally convenient::
+
+        {"fish": "an aquatic animal ..."}
+        {"descriptions": {"fish": "an aquatic animal ..."}}
+    """
+    path = Path(path).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"category description file not found: {path}")
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"category description file is not valid JSON: {path}") from error
+
+    if isinstance(payload, dict) and "descriptions" in payload:
+        payload = payload["descriptions"]
+    if not isinstance(payload, dict) or not payload:
+        raise ValueError(
+            "category description JSON must be a non-empty object, optionally under "
+            "the 'descriptions' key"
+        )
+
+    descriptions: dict[str, str] = {}
+    for category, description in payload.items():
+        if not isinstance(category, str) or not category.strip():
+            raise ValueError("category description keys must be non-empty strings")
+        if not isinstance(description, str) or not description.strip():
+            raise ValueError(
+                f"description for category {category!r} must be a non-empty string"
+            )
+        descriptions[category.strip()] = description.strip()
+    return descriptions
+
+
+def _resolve_category_description(
+    category: str,
+    *,
+    embedded_description: object = None,
+    category_descriptions: Mapping[str, str] | None = None,
+) -> str | None:
+    """Resolve an external description, falling back to an episode field."""
+    if category_descriptions:
+        description = category_descriptions.get(category)
+        if description is None:
+            folded_category = category.casefold()
+            matches = [
+                value
+                for key, value in category_descriptions.items()
+                if isinstance(key, str) and key.casefold() == folded_category
+            ]
+            description = matches[0] if matches else None
+        if description is not None:
+            if not isinstance(description, str) or not description.strip():
+                raise ValueError(
+                    f"description for category {category!r} must be a non-empty string"
+                )
+            return description.strip()
+
+    if embedded_description is not None:
+        if not isinstance(embedded_description, str) or not embedded_description.strip():
+            raise ValueError(
+                f"embedded description for category {category!r} must be a non-empty string"
+            )
+        return embedded_description.strip()
+    return None
 
 
 def format_answer(category: str, boxes: Iterable[Sequence[float]]) -> str:
@@ -209,13 +295,19 @@ def build_eval_messages(
     min_pixels: int,
     max_pixels: int,
     visual_enhancement: bool = False,
+    instruction_enhancement: bool = False,
+    category_descriptions: Mapping[str, str] | None = None,
 ) -> list[dict]:
     """Build the generation prompt for one fixed episode.
 
     Support turns retain the score-free SFT schema.  The final query answer is
     omitted and its prompt explicitly requests model-estimated confidence.
     When ``visual_enhancement`` is enabled, red ground-truth boxes are drawn
-    on support images only; the query image is never annotated.
+    on support images only; the query image is never annotated.  When
+    ``instruction_enhancement`` is enabled, the target category's description
+    is added to every support and query question.  Descriptions may be passed
+    in ``category_descriptions`` or embedded in the episode as
+    ``category_description``.
     """
     category = record.get("category")
     support = record.get("support")
@@ -228,11 +320,26 @@ def build_eval_messages(
         raise ValueError("evaluation record needs category, support, and query fields")
     if min_pixels < 1 or max_pixels < min_pixels:
         raise ValueError("invalid evaluation pixel budget")
+    category_description = None
+    if instruction_enhancement:
+        category_description = _resolve_category_description(
+            category,
+            embedded_description=record.get("category_description"),
+            category_descriptions=category_descriptions,
+        )
+        if category_description is None:
+            raise ValueError(
+                f"instruction enhancement requires a description for category {category!r}; "
+                "provide --category-descriptions or add category_description to the episode"
+            )
 
     messages: list[dict] = [
         {"role": "system", "content": [{"type": "text", "text": EVAL_SYSTEM_PROMPT}]}
     ]
-    support_question = build_question(category)
+    support_question = build_question(
+        category,
+        category_description=category_description,
+    )
     for frame in support:
         if not isinstance(frame, dict):
             raise ValueError("support frames must be objects")
@@ -279,6 +386,7 @@ def build_eval_messages(
                         category,
                         query=True,
                         include_confidence=True,
+                        category_description=category_description,
                     ),
                 },
             ],

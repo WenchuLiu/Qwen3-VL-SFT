@@ -21,6 +21,17 @@ Visual Enhancement uses the same few-shot evaluator:
 VE=1 bash scripts/evaluate_fewshot.sh
 ```
 
+Instruction Enhancement uses a category-description JSON mapping:
+
+```bash
+IE=1 CATEGORY_DESCRIPTIONS=docs/category_descriptions.example.json \
+bash scripts/evaluate_fewshot.sh
+```
+
+The repository includes the complete 57-category mapping for ArTaxOr,
+Clipart1k, FISH, NEU-DET, UODD, and VISUALDIOR at
+`docs/cross_domain_category_descriptions.json`.
+
 Without `MAX_NEW_TOKENS`, the evaluator uses the dataset registry: VISUALDIOR
 gets 2,048 new tokens and all other registered cross-domain datasets get 1,024.
 Set `MAX_NEW_TOKENS` only when a deliberate global override is needed.

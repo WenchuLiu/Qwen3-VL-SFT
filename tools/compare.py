@@ -29,6 +29,9 @@ def main() -> None:
         "min_pixels",
         "max_pixels",
         "max_new_tokens",
+        "visual_enhancement",
+        "instruction_enhancement",
+        "category_descriptions_sha256",
     ):
         if before.get(key) != after.get(key):
             raise ValueError(f"cannot compare results with different {key}")

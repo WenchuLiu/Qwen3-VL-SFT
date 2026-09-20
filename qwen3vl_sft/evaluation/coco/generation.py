@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import time
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Mapping, Sequence
 
-from .protocol import PROTOCOL_NAME, PROMPT_TEMPLATE_VERSION, build_eval_messages
 from .metrics import evaluate_episode_predictions, trainer_metrics
+from .protocol import (
+    PROMPT_TEMPLATE_VERSION,
+    PROTOCOL_NAME,
+    build_eval_messages,
+    load_category_descriptions,
+)
 
 
 def _resolve_media_path(value: object, base_path: Path) -> object:
@@ -19,6 +24,11 @@ def _resolve_media_path(value: object, base_path: Path) -> object:
         return value
     path = Path(value).expanduser()
     return str(path.resolve() if path.is_absolute() else (base_path / path).resolve())
+
+
+def file_sha256(path: str | Path) -> str:
+    """Return the SHA-256 digest of a local experiment input file."""
+    return hashlib.sha256(Path(path).expanduser().resolve().read_bytes()).hexdigest()
 
 
 def load_episodes(path: str | Path) -> tuple[dict, list[dict]]:
@@ -89,13 +99,17 @@ def generate_responses(
     max_pixels: int,
     max_new_tokens: int,
     visual_enhancement: bool = False,
+    instruction_enhancement: bool = False,
+    category_descriptions: Mapping[str, str] | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> list[str]:
     """Generate deterministic responses for fixed episodes.
 
     ``visual_enhancement`` annotates support images with their GT boxes while
     leaving the query image untouched.  The flag is optional so the baseline
-    prompt and all existing callers remain unchanged.
+    prompt and all existing callers remain unchanged.  ``instruction_enhancement``
+    adds the target category description to support and query questions without
+    changing the images or model weights.
     """
     import torch
 
@@ -133,6 +147,8 @@ def generate_responses(
                     min_pixels=min_pixels,
                     max_pixels=max_pixels,
                     visual_enhancement=visual_enhancement,
+                    instruction_enhancement=instruction_enhancement,
+                    category_descriptions=category_descriptions,
                 )
                 for record in batch
             ]
@@ -192,6 +208,8 @@ def evaluate_loaded_model(
     max_pixels: int,
     max_new_tokens: int,
     visual_enhancement: bool = False,
+    instruction_enhancement: bool = False,
+    category_descriptions: Mapping[str, str] | None = None,
     coco_annotations_path: str | None = None,
 ) -> dict:
     responses = generate_responses(
@@ -204,6 +222,8 @@ def evaluate_loaded_model(
         max_pixels=max_pixels,
         max_new_tokens=max_new_tokens,
         visual_enhancement=visual_enhancement,
+        instruction_enhancement=instruction_enhancement,
+        category_descriptions=category_descriptions,
     )
     return evaluate_episode_predictions(
         records,
@@ -224,6 +244,9 @@ def result_payload(
     max_pixels: int,
     max_new_tokens: int,
     visual_enhancement: bool = False,
+    instruction_enhancement: bool = False,
+    category_descriptions_path: str | None = None,
+    category_descriptions_sha256: str | None = None,
     coco_annotations_path: str | None = None,
     runtime_seconds: float | None = None,
 ) -> dict:
@@ -233,6 +256,14 @@ def result_payload(
         if episodes_file.is_file()
         else None
     )
+    if visual_enhancement and instruction_enhancement:
+        prompt_variant = "visual_and_instruction_enhanced"
+    elif visual_enhancement:
+        prompt_variant = "visual_enhanced"
+    elif instruction_enhancement:
+        prompt_variant = "instruction_enhanced"
+    else:
+        prompt_variant = "baseline"
     return {
         "protocol": PROTOCOL_NAME,
         "prompt_template_version": PROMPT_TEMPLATE_VERSION,
@@ -249,6 +280,12 @@ def result_payload(
         # Keep the short name used by the original VE evaluator available for
         # downstream result consumers.
         "ve": bool(visual_enhancement),
+        "instruction_enhancement": bool(instruction_enhancement),
+        # Keep a short compatibility key alongside the descriptive name.
+        "ie": bool(instruction_enhancement),
+        "prompt_variant": prompt_variant,
+        "category_descriptions_path": category_descriptions_path,
+        "category_descriptions_sha256": category_descriptions_sha256,
         "coco_annotations_path": coco_annotations_path,
         "runtime_seconds": runtime_seconds,
         **result,
@@ -267,9 +304,19 @@ def evaluate_checkpoint(
     max_new_tokens: int,
     attention: str,
     visual_enhancement: bool = False,
+    instruction_enhancement: bool = False,
+    category_descriptions_path: str | None = None,
 ) -> dict:
     import torch
     from transformers import AutoModelForImageTextToText, AutoProcessor
+
+    category_descriptions = None
+    description_path = None
+    description_hash = None
+    if category_descriptions_path is not None:
+        description_path = str(Path(category_descriptions_path).expanduser().resolve())
+        category_descriptions = load_category_descriptions(description_path)
+        description_hash = file_sha256(description_path)
 
     dtype = torch.bfloat16 if str(device).startswith("cuda") else torch.float32
     model = AutoModelForImageTextToText.from_pretrained(
@@ -297,6 +344,8 @@ def evaluate_checkpoint(
         max_pixels=max_pixels,
         max_new_tokens=max_new_tokens,
         visual_enhancement=visual_enhancement,
+        instruction_enhancement=instruction_enhancement,
+        category_descriptions=category_descriptions,
         coco_annotations_path=coco_annotations_path,
     )
     return result_payload(
@@ -310,6 +359,9 @@ def evaluate_checkpoint(
         max_pixels=max_pixels,
         max_new_tokens=max_new_tokens,
         visual_enhancement=visual_enhancement,
+        instruction_enhancement=instruction_enhancement,
+        category_descriptions_path=description_path,
+        category_descriptions_sha256=description_hash,
         coco_annotations_path=coco_annotations_path,
         runtime_seconds=time.monotonic() - started,
     )

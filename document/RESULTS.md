@@ -27,5 +27,7 @@ outputs/eval/fewshot/qwen3-vl-4b-base-fewshot/
 ```
 
 `result.json` is reusable only when its protocol and generation budget match
-the requested run. Set `SKIP_EXISTING=1` to reuse complete entries; changing a
-prompt, episode manifest, or token budget should produce a new result.
+the requested run. It also records `visual_enhancement`,
+`instruction_enhancement`, and the category-description file hash when IE is
+enabled. Set `SKIP_EXISTING=1` to reuse complete entries; changing a prompt,
+episode manifest, or token budget should produce a new result.

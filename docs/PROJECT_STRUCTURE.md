@@ -9,9 +9,10 @@ implemented as three unrelated copies of an evaluator:
 | Fixed COCO evaluation | `qwen3vl_sft/evaluation/coco/` | One canonical prompt, generation, parsing, and mAP implementation |
 | Cross-domain few-shot benchmark | `qwen3vl_sft/evaluation/fewshot/` | Dataset registry, episode manifests, cache, and multi-GPU scheduling |
 
-Visual Enhancement is a mode of the shared generation protocol. It draws boxes
-on support images through the common prompt builder; it is not a fourth copy of
-the evaluator.
+Visual Enhancement and Instruction Enhancement are modes of the shared
+generation protocol. VE draws boxes on support images, while IE adds a
+category description to the text instruction; neither is a separate evaluator
+implementation.
 
 ## Canonical tree
 
@@ -31,7 +32,7 @@ qwen3-vl-sft/
 │   ├── build_coco_train.sh
 │   ├── build_coco_eval.sh
 │   ├── evaluate_coco.sh
-│   ├── evaluate_fewshot.sh      # baseline and VE via VE=1
+│   ├── evaluate_fewshot.sh      # baseline, VE, and IE via flags/env
 │   └── run_coco_before_after.sh
 ├── docs/                        # active project and protocol documentation
 ├── document/                    # older detailed documents kept for links

@@ -24,13 +24,30 @@ ATTENTION="${ATTENTION:-${ATTN_IMPLEMENTATION:-sdpa}}"
 SUPPORT_IMAGE_IDS="${SUPPORT_IMAGE_IDS:-data/coco/train_image_ids.json}"
 VE_MODE=0
 VE_FLAG_IN_ARGS=0
+IE_MODE=0
+IE_FLAG_IN_ARGS=0
+CATEGORY_DESCRIPTIONS_FLAG_IN_ARGS=0
 if [[ "${VE:-0}" == "1" || "${VISUAL_ENHANCEMENT:-0}" == "1" ]]; then
   VE_MODE=1
+fi
+if [[ "${IE:-0}" == "1" || "${INSTRUCTION_ENHANCEMENT:-0}" == "1" ]]; then
+  IE_MODE=1
+fi
+if [[ -n "${CATEGORY_DESCRIPTIONS:-}" ]]; then
+  IE_MODE=1
 fi
 for argument in "$@"; do
   if [[ "${argument}" == "--ve" || "${argument}" == "--visual-enhancement" ]]; then
     VE_MODE=1
     VE_FLAG_IN_ARGS=1
+  fi
+  if [[ "${argument}" == "--ie" || "${argument}" == "--instruction-enhancement" ]]; then
+    IE_MODE=1
+    IE_FLAG_IN_ARGS=1
+  fi
+  if [[ "${argument}" == "--category-descriptions" || "${argument}" == --category-descriptions=* ]]; then
+    IE_MODE=1
+    CATEGORY_DESCRIPTIONS_FLAG_IN_ARGS=1
   fi
 done
 if [[ ! -f "${SUPPORT_IMAGE_IDS}" && -f data/coco/train_image_ids_10pct.json ]]; then
@@ -62,6 +79,10 @@ echo "output=${OUTPUT}"
 echo "num_query_images=${NUM_QUERY_IMAGES} when the manifest is built"
 echo "max_new_tokens=${MAX_NEW_TOKENS}"
 echo "visual_enhancement=${VE_MODE}"
+echo "instruction_enhancement=${IE_MODE}"
+if [[ -n "${CATEGORY_DESCRIPTIONS:-}" ]]; then
+  echo "category_descriptions=${CATEGORY_DESCRIPTIONS}"
+fi
 
 EVAL_ARGS=(
   tools/evaluate_coco.py
@@ -80,6 +101,12 @@ if [[ -n "${ADAPTER_PATH:-}" ]]; then
 fi
 if [[ "${VE_MODE}" == "1" && "${VE_FLAG_IN_ARGS}" == "0" ]]; then
   EVAL_ARGS+=(--ve)
+fi
+if [[ "${IE_MODE}" == "1" && "${IE_FLAG_IN_ARGS}" == "0" ]]; then
+  EVAL_ARGS+=(--instruction-enhancement)
+fi
+if [[ -n "${CATEGORY_DESCRIPTIONS:-}" && "${CATEGORY_DESCRIPTIONS_FLAG_IN_ARGS}" == "0" ]]; then
+  EVAL_ARGS+=(--category-descriptions "${CATEGORY_DESCRIPTIONS}")
 fi
 EVAL_ARGS+=("$@")
 

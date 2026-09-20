@@ -34,6 +34,12 @@ support image + question -> support answer
 query image + question -> model generation
 ```
 
+The optional `--instruction-enhancement`/`--ie` variant appends the target
+category's visual description to each support and query question. Descriptions
+are supplied as a JSON category-to-text mapping with
+`--category-descriptions`; this is inference-time prompt context and requires
+no training or weight updates.
+
 The model never receives the query answer. The SFT record does contain that
 answer, but `loss_mode=last_assistant` makes the collator supervise only the
 last assistant turn. Support answers are context, not training targets.
