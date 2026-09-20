@@ -15,10 +15,10 @@ metrics_by_shot
 predictions   # raw response plus parsed and target boxes
 ```
 
-The few-shot application uses an MMDetection-style work directory:
+The few-shot application uses an MMDetection-style evaluation directory:
 
 ```text
-work_dirs/qwen3-vl-4b-base-fewshot/
+outputs/eval/fewshot/qwen3-vl-4b-base-fewshot/
 ├── config.json
 ├── summary.json
 └── <dataset>/<shot>shot/

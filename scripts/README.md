@@ -30,9 +30,14 @@ Override external resources without editing scripts:
 ```bash
 MODEL_PATH=/path/to/checkpoint \
 DATA_ROOT=/path/to/benchmark-data \
-WORK_ROOT=work_dirs/my-run \
+WORK_ROOT=outputs/eval/fewshot/my-run \
 bash scripts/evaluate_fewshot.sh
 ```
 
-The `shell/` directory and `fewshot_eval/scripts/` are retained as compatibility
-paths. They should delegate to these scripts rather than gain new logic.
+Training defaults are under `outputs/train/`, while standalone evaluation
+defaults are under `outputs/eval/`. Set `OUTPUT_DIR`, `WORK_ROOT`, or `EVAL_ROOT`
+to place a run on another filesystem without changing the launchers.
+
+The `shell/` directory and `scripts/cross_domain_datasets/` are retained as
+compatibility paths. They should delegate to these scripts rather than gain new
+logic.

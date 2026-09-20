@@ -37,7 +37,8 @@ unset SWANLAB_PROJECT
 MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-${ROOT_DIR}/weights/Qwen3-VL-4B-Instruct}"
 DATASET="${DATASET:-${ROOT_DIR}/data/LLM/coco/smoke_train_10images.json}"
 EVAL_EPISODES="${EVAL_EPISODES:-${ROOT_DIR}/data/LLM/coco/smoke_eval_10.json}"
-OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/runs/slurm-smoke-10images-10eval}"
+RUN_ID="${RUN_ID:-qwen3vl-sft-smoke-10images-10eval-${SLURM_JOB_ID:-$(date +%Y%m%d-%H%M%S)}}"
+OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/outputs/train/sft/${RUN_ID}}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-4}"
 REPORT_TO="${REPORT_TO:-swanlab}"
 

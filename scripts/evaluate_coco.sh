@@ -5,7 +5,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:?Set MODEL_NAME_OR_PATH}"
 EPISODES="${EPISODES:?Set EPISODES to a fixed episode JSON file}"
-OUTPUT="${OUTPUT:-${ROOT_DIR}/runs/eval.json}"
+EVAL_ID="${EVAL_ID:-coco-eval}"
+EVAL_ROOT="${EVAL_ROOT:-${ROOT_DIR}/outputs/eval/coco/${EVAL_ID}}"
+OUTPUT="${OUTPUT:-${EVAL_ROOT}/result.json}"
 
 cd "${ROOT_DIR}"
 ADAPTER_ARGS=()

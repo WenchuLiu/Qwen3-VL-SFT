@@ -18,7 +18,7 @@ Use the package entry point for new runs:
 torchrun --nproc_per_node=2 -m qwen3vl_sft.train \
   --model-name-or-path Qwen/Qwen3-VL-4B-Instruct \
   --dataset data/train.json \
-  --output-dir runs/qwen3vl-lora \
+  --output-dir outputs/train/sft/qwen3vl-lora \
   --lora-enable true \
   --bf16 true \
   --eval-mode none
@@ -59,7 +59,7 @@ Use the standalone GRPO entry point for reinforcement learning:
 ```bash
 MODEL_NAME_OR_PATH=Qwen/Qwen3-VL-4B-Instruct \
 DATASET=data/coco/train_sft.json \
-OUTPUT_DIR=runs/qwen3vl-grpo \
+OUTPUT_DIR=outputs/train/grpo/qwen3vl-grpo \
 bash scripts/train_grpo.sh
 ```
 

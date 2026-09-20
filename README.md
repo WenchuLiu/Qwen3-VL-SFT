@@ -26,7 +26,8 @@ qwen3vl_sft/
 tools/           thin Python command-line entry points
 scripts/         canonical reproducible shell entry points
 shell/           compatibility wrappers that delegate to scripts/
-fewshot_eval/    compatibility paths for old dataset-specific launchers
+scripts/cross_domain_datasets/
+                 compatibility paths for old dataset-specific launchers
 docs/            active project structure and migration documentation
 document/        detailed legacy documents retained for existing links
 ```
@@ -123,7 +124,7 @@ The most direct entry point is:
 torchrun --nproc_per_node=2 -m qwen3vl_sft.train \
   --model-name-or-path Qwen/Qwen3-VL-4B-Instruct \
   --dataset data/my_train.json \
-  --output-dir runs/my-lora \
+  --output-dir outputs/train/sft/my-lora \
   --lora-enable true \
   --bf16 true \
   --eval-mode none
@@ -135,7 +136,7 @@ The equivalent wrapper is `scripts/train_lora.sh`:
 export SWANLAB_API_KEY=your_api_key
 MODEL_NAME_OR_PATH=Qwen/Qwen3-VL-4B-Instruct \
 DATASET=data/my_train.json \
-OUTPUT_DIR=runs/my-lora \
+OUTPUT_DIR=outputs/train/sft/my-lora \
 bash scripts/train_lora.sh
 ```
 
@@ -144,6 +145,11 @@ The wrapper reports to SwanLab by default using project
 Override these defaults with `SWANLAB_PROJECT`, `RUN_NAME`, `REPORT_TO`, or
 `NUM_TRAIN_EPOCHS`. Keep `SWANLAB_API_KEY` in the environment; do not store it
 in a script or configuration committed to Git.
+
+By default, new training runs are created under
+`outputs/train/sft/<run-id>/` or `outputs/train/grpo/<run-id>/`. Set
+`RUN_ID` for a stable, human-readable run name or set `OUTPUT_DIR` to an
+explicit path when resuming an existing run.
 
 ## Score-aware GRPO fine-tuning
 
@@ -165,7 +171,7 @@ confidence scores, and keeps the answer's boxes as reward targets.
 ```bash
 MODEL_NAME_OR_PATH=Qwen/Qwen3-VL-4B-Instruct \
 DATASET=data/coco/train_sft.json \
-OUTPUT_DIR=runs/coco-grpo \
+OUTPUT_DIR=outputs/train/grpo/coco-grpo \
 NPROC_PER_NODE=2 \
 bash scripts/train_grpo.sh
 ```
@@ -186,7 +192,7 @@ torchrun --nproc_per_node=2 -m qwen3vl_sft.train \
   --eval-mode loss \
   --eval-ratio 0.05 \
   --eval-strategy epoch \
-  --output-dir runs/loss-eval
+  --output-dir outputs/train/sft/loss-eval
 ```
 
 For LoRA, the default target modules are the language-model
@@ -215,7 +221,7 @@ Evaluate the base model:
 ```bash
 MODEL_NAME_OR_PATH=Qwen/Qwen3-VL-4B-Instruct \
 EPISODES=data/coco/val_episodes.json \
-OUTPUT=runs/base.json \
+OUTPUT=outputs/eval/coco/base/result.json \
 bash scripts/evaluate_coco.sh
 ```
 
@@ -233,7 +239,7 @@ Train and evaluate with generation-based validation:
 ```bash
 MODEL_NAME_OR_PATH=Qwen/Qwen3-VL-4B-Instruct \
 DATASET=data/coco/train_sft.json \
-OUTPUT_DIR=runs/coco-lora \
+OUTPUT_DIR=outputs/train/sft/coco-lora \
 EVAL_MODE=generation \
 EVAL_STRATEGY=epoch \
 EVAL_EPISODES=data/coco/val_episodes.json \
@@ -244,9 +250,9 @@ Evaluate the adapter using the same fixed manifest:
 
 ```bash
 MODEL_NAME_OR_PATH=Qwen/Qwen3-VL-4B-Instruct \
-ADAPTER_PATH=runs/coco-lora \
+ADAPTER_PATH=outputs/train/sft/coco-lora \
 EPISODES=data/coco/val_episodes.json \
-OUTPUT=runs/adapter.json \
+OUTPUT=outputs/eval/coco/adapter/result.json \
 bash scripts/evaluate_coco.sh
 ```
 
@@ -275,7 +281,7 @@ DATASETS="FISH VISUALDIOR" SHOTS="1 2 4" \
 bash scripts/evaluate_fewshot.sh
 ```
 
-Individual runs write to `work_dirs/qwen3-vl-4b-fewshot/<dataset>/`, keeping
+Individual runs write to `outputs/eval/fewshot/qwen3-vl-4b-fewshot/<dataset>/`, keeping
 each dataset's `config.json`, `summary.json`, results, and `evaluation.log`
 separate.
 
@@ -302,11 +308,11 @@ bash scripts/evaluate_fewshot.sh
 
 The same mode can be selected for one dataset with
 `VE=1 DATASETS=FISH SHOTS="1 2 4" bash scripts/evaluate_fewshot.sh`. The old
-`fewshot_eval/scripts/run_ve.sh` path remains a compatibility wrapper. VE
+`scripts/cross_domain_datasets/run_ve.sh` path remains a compatibility wrapper. VE
 requires at least one support shot, so it cannot be combined with `SHOTS="0"`.
 
 Results follow an MMDetection-style layout under the selected `WORK_ROOT`
-(default `work_dirs/qwen3-vl-4b-ve-fewshot/` for VE): `evaluation.log`, `config.json`,
+(default `outputs/eval/fewshot/qwen3-vl-4b-ve-fewshot/` for VE): `evaluation.log`, `config.json`,
 `summary.json`, and one `episodes.json` plus `result.json` per dataset/shot.
 Use `SKIP_EXISTING=1` to resume completed entries. The main metric is
 `map_50_95`; `map_50`, `map_75`, ranking-mAP, raw responses, and parsed

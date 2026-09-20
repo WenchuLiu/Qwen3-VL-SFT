@@ -147,7 +147,7 @@ VE=1 ATTENTION=sdpa bash scripts/evaluate_fewshot.sh
 torchrun --nproc_per_node=2 -m qwen3vl_sft.train \
   --model-name-or-path Qwen/Qwen3-VL-4B-Instruct \
   --dataset data/train.json \
-  --output-dir runs/qwen3vl-lora \
+  --output-dir outputs/train/sft/qwen3vl-lora \
   --attn-implementation sdpa
 ```
 

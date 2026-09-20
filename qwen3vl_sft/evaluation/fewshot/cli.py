@@ -379,7 +379,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--work-dir",
         type=Path,
-        default=ROOT / "work_dirs" / "qwen3-vl-4b-base-fewshot",
+        default=ROOT / "outputs" / "eval" / "fewshot" / "qwen3-vl-4b-base-fewshot",
     )
     parser.add_argument("--datasets", nargs="+", default=list(DEFAULT_DATASETS))
     parser.add_argument("--shots", nargs="+", default=["0", "1", "2", "4"])

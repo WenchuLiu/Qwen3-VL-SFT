@@ -12,9 +12,11 @@ env/
 /models
 /weights
 /cache
+/outputs
+
+# Legacy experiment roots kept ignored for existing checkouts.
 /runs
 /work_dirs
-/outputs
 /wandb
 /swanlog
 

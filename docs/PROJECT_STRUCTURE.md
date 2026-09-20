@@ -36,11 +36,14 @@ qwen3-vl-sft/
 ├── docs/                        # active project and protocol documentation
 ├── document/                    # older detailed documents kept for links
 ├── shell/                       # compatibility wrappers only
-├── fewshot_eval/scripts/        # compatibility dataset/VE launcher paths
+├── scripts/cross_domain_datasets/
+│                                # compatibility dataset/VE launcher paths
 ├── data/                        # local datasets/manifests; git-ignored
 ├── weights/                     # local checkpoints; git-ignored
-├── runs/                        # training/evaluation outputs; git-ignored
-└── work_dirs/                   # benchmark manifests/results; git-ignored
+└── outputs/                     # generated training/evaluation artifacts; git-ignored
+    ├── train/                   # SFT/GRPO model outputs, checkpoints, and logs
+    ├── eval/                    # standalone evaluation results and manifests
+    └── experiments/             # multi-stage before/after experiment bundles
 ```
 
 ## Which command should be used?
@@ -62,16 +65,16 @@ VE=1 bash scripts/evaluate_fewshot.sh
 ```
 
 `tools/*.py` remains useful for direct CLI access and backward compatibility.
-The old `shell/*.sh` and `fewshot_eval/scripts/*.sh` paths are wrappers or
-dataset-specific compatibility launchers; new experiments should not add more
-logic there.
+The old `shell/*.sh` and `scripts/cross_domain_datasets/*.sh` paths are wrappers
+or dataset-specific compatibility launchers; new experiments should not add
+more logic there.
 
 ## Path policy
 
 No experiment path should contain a developer's home directory. Shell scripts
 may resolve their own repository root at runtime with `dirname` and `pwd`; this
 is an implementation detail, not a hard-coded machine path. Defaults should be
-repository-relative (`data`, `weights`, `runs`, `work_dirs`). External datasets
+repository-relative (`data`, `weights`, `outputs`). External datasets
 and checkpoints are supplied through environment variables such as
 `DATA_ROOT`, `COCO_ROOT`, `MODEL_PATH`, or `MODEL_NAME_OR_PATH`.
 
@@ -82,8 +85,17 @@ runtime directories or in a user-provided external data root.
 ## Result ownership
 
 - `data/`: input datasets and deterministic manifests.
-- `runs/`: training checkpoints and standalone COCO result files.
-- `work_dirs/`: few-shot manifests, per-shot results, summaries, and logs.
+- `outputs/train/`: one directory per SFT or GRPO run. The run directory is
+  passed to Hugging Face Trainer as `output_dir` and contains its checkpoints,
+  final model/adapter, trainer state, arguments, and local telemetry.
+- `outputs/eval/`: standalone COCO and cross-domain few-shot manifests,
+  predictions, summaries, and evaluation logs.
+- `outputs/experiments/`: bundled workflows that combine data preparation,
+  training, base/adapter evaluation, and comparison results.
+
+The legacy `runs/` and `work_dirs/` directories remain ignored and can still be
+used through explicit `OUTPUT_DIR`/`WORK_ROOT` overrides, but new scripts should
+write under `outputs/`.
 
 Keep base, adapter, baseline, and VE outputs in separate subdirectories. This
 makes `--skip-existing` safe and prevents comparing results produced by

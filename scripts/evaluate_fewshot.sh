@@ -26,15 +26,16 @@ done
 
 if [[ "${VE_MODE}" == "1" ]]; then
   DEFAULT_SHOTS=(1 2 4)
-  DEFAULT_WORK_ROOT="work_dirs/qwen3-vl-4b-ve-fewshot"
+  EVAL_ID="${EVAL_ID:-qwen3-vl-4b-ve-fewshot}"
   DEFAULT_NUM_GPUS=4
   DEFAULT_BATCH_SIZE=2
 else
   DEFAULT_SHOTS=(0 1 2 4)
-  DEFAULT_WORK_ROOT="work_dirs/qwen3-vl-4b-fewshot"
+  EVAL_ID="${EVAL_ID:-qwen3-vl-4b-fewshot}"
   DEFAULT_NUM_GPUS=2
   DEFAULT_BATCH_SIZE=1
 fi
+DEFAULT_WORK_ROOT="${ROOT_DIR}/outputs/eval/fewshot/${EVAL_ID}"
 
 if [[ -n "${DATASETS:-}" ]]; then
   read -r -a DATASET_LIST <<< "${DATASETS}"
@@ -47,7 +48,7 @@ else
   SHOT_LIST=("${DEFAULT_SHOTS[@]}")
 fi
 
-WORK_ROOT="${WORK_ROOT:-${OUTPUT_DIR:-${DEFAULT_WORK_ROOT}}}"
+WORK_ROOT="${WORK_ROOT:-${OUTPUT_DIR:-${EVAL_ROOT:-${DEFAULT_WORK_ROOT}}}}"
 NUM_GPUS="${NUM_GPUS:-${DEFAULT_NUM_GPUS}}"
 BATCH_SIZE="${BATCH_SIZE:-${DEFAULT_BATCH_SIZE}}"
 MIN_PIXELS="${MIN_PIXELS:-3136}"

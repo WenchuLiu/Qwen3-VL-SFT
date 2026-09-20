@@ -20,20 +20,20 @@ Build a fixed COCO manifest once and reuse it for base and adapter evaluation:
 bash scripts/build_coco_eval.sh
 MODEL_NAME_OR_PATH=Qwen/Qwen3-VL-4B-Instruct \
 EPISODES=data/coco/val_episodes.json \
-OUTPUT=runs/base.json \
+OUTPUT=outputs/eval/coco/base/result.json \
 bash scripts/evaluate_coco.sh
 ```
 
 For the standard 500-query-image benchmark, use
 `scripts/evaluate_coco_benchmark.sh`; it builds the fixed manifest when it is
 missing and then delegates to the same canonical evaluator. The old
-`fewshot_eval/scripts/run_coco.sh` path is a compatibility wrapper.
+`scripts/cross_domain_datasets/run_coco.sh` is a compatibility wrapper.
 
 The five standard cross-domain datasets use 1,024 generated tokens;
 VISUALDIOR uses 2,048. The canonical cross-domain launcher is
 `scripts/evaluate_fewshot.sh`; the implementation and registry live under
 `qwen3vl_sft/evaluation/fewshot/`. Dataset-specific launchers under
-`fewshot_eval/scripts/` are compatibility paths.
+`scripts/cross_domain_datasets/` are compatibility paths.
 
 Visual Enhancement is implemented in the shared prompt builder. The dedicated
 launcher covers ArTaxOr, Clipart1k, FISH, NEU-DET, UODD, and VISUALDIOR at
