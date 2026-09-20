@@ -467,7 +467,7 @@ def parse_args() -> argparse.Namespace:
         "--instruction-enhancement",
         dest="instruction_enhancement",
         action="store_true",
-        help="Add the requested category description to support and query instructions.",
+        help="Add the requested category description to the final query instruction.",
     )
     parser.add_argument(
         "--category-descriptions",

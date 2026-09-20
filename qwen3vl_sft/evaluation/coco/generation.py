@@ -108,8 +108,8 @@ def generate_responses(
     ``visual_enhancement`` annotates support images with their GT boxes while
     leaving the query image untouched.  The flag is optional so the baseline
     prompt and all existing callers remain unchanged.  ``instruction_enhancement``
-    adds the target category description to support and query questions without
-    changing the images or model weights.
+    adds the target category description to the final query question without
+    changing support questions, images, or model weights.
     """
     import torch
 

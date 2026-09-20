@@ -35,8 +35,9 @@ query image + question -> model generation
 ```
 
 The optional `--instruction-enhancement`/`--ie` variant appends the target
-category's visual description to each support and query question. Descriptions
-are supplied as a JSON category-to-text mapping with
+category's visual description to the final query question; support questions
+remain in the baseline format. Descriptions are supplied as a JSON
+category-to-text mapping with
 `--category-descriptions`; this is inference-time prompt context and requires
 no training or weight updates.
 

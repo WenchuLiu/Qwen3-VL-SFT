@@ -72,16 +72,21 @@ def build_question(
         if not isinstance(category_description, str) or not category_description.strip():
             raise ValueError("category_description must be a non-empty string when provided")
         category_description = category_description.strip()
-        target = f"{category} — {category_description}"
-    else:
-        target = category
     prefix = "Using the preceding in-context examples, " if query else ""
     image_phrase = "the query image" if query else "the image"
     verb = "locate" if query else "Locate"
-    question = (
-        f"{prefix}{verb} all of the following objects: {target} in "
-        f"{image_phrase} and output all detections as a JSON list like "
-    )
+    if category_description is not None:
+        question = (
+            f"{prefix}{verb} all of the following objects: {category} in "
+            f"{image_phrase}.\n"
+            f"{category} is {category_description}.\n"
+            "Output all detections as a JSON list like "
+        )
+    else:
+        question = (
+            f"{prefix}{verb} all of the following objects: {category} in "
+            f"{image_phrase} and output all detections as a JSON list like "
+        )
     if include_confidence:
         return (
             question
@@ -314,8 +319,10 @@ def build_eval_messages(
     When ``visual_enhancement`` is enabled, red ground-truth boxes are drawn
     on support images only; the query image is never annotated. When
     ``instruction_enhancement`` is enabled, the target category's description
-    is added to every support and query question. Descriptions may be passed
-    in ``category_descriptions`` or embedded in the episode as
+    is added to the final query question. With zero shots, this is the only
+    user turn; with support shots, support questions remain in the original
+    score-free SFT format. Descriptions may be passed in
+    ``category_descriptions`` or embedded in the episode as
     ``category_description``.
     """
     category = record.get("category")
@@ -358,10 +365,7 @@ def build_eval_messages(
             ],
         }
     ]
-    support_question = build_question(
-        category,
-        category_description=category_description,
-    )
+    support_question = build_question(category)
     for frame in support:
         if not isinstance(frame, dict):
             raise ValueError("support frames must be objects")

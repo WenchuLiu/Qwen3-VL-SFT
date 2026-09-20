@@ -43,6 +43,26 @@ class InstructionEnhancementTest(unittest.TestCase):
         self.assertIn("Locate all of the following objects: fish in the image", messages[1]["content"][1]["text"])
         self.assertIn('"score":0.95', messages[1]["content"][1]["text"])
 
+    def test_zero_shot_ie_uses_separate_category_definition_sentence(self):
+        record = {**self.record, "support": []}
+        messages = build_eval_messages(
+            record,
+            min_pixels=1,
+            max_pixels=100,
+            instruction_enhancement=True,
+            category_descriptions={
+                "fish": "an aquatic animal with fins and scales",
+            },
+        )
+        query_text = messages[-1]["content"][1]["text"]
+        self.assertIn(
+            "Locate all of the following objects: fish in the image.\n"
+            "fish is an aquatic animal with fins and scales.",
+            query_text,
+        )
+        self.assertNotIn("fish —", query_text)
+        self.assertNotIn("Using the preceding in-context examples", query_text)
+
     def test_few_shot_retains_v5_eval_prompt(self):
         messages = build_eval_messages(self.record, min_pixels=1, max_pixels=100)
         self.assertIn("in-context examples", messages[0]["content"][0]["text"])
@@ -51,7 +71,7 @@ class InstructionEnhancementTest(unittest.TestCase):
             messages[-1]["content"][1]["text"],
         )
 
-    def test_description_is_added_to_support_and_query_questions(self):
+    def test_description_is_added_only_to_final_query_question(self):
         messages = build_eval_messages(
             self.record,
             min_pixels=1,
@@ -68,12 +88,12 @@ class InstructionEnhancementTest(unittest.TestCase):
         described_texts = [
             text
             for text in texts
-            if "fish — an aquatic animal with fins and scales" in text
+            if "fish is an aquatic animal with fins and scales" in text
         ]
-        self.assertEqual(len(described_texts), 2)
-        self.assertTrue(
-            all("an aquatic animal with fins and scales" in text for text in described_texts)
-        )
+        self.assertEqual(len(described_texts), 1)
+        self.assertIn("fish in the image and output", texts[1])
+        self.assertNotIn("fish is an aquatic animal", texts[1])
+        self.assertIn("fish in the query image.", texts[-1])
 
     def test_episode_description_is_used_without_external_file(self):
         record = {**self.record, "category_description": "a small aquatic animal"}
@@ -83,7 +103,7 @@ class InstructionEnhancementTest(unittest.TestCase):
             max_pixels=100,
             instruction_enhancement=True,
         )
-        self.assertIn("a small aquatic animal", messages[1]["content"][1]["text"])
+        self.assertIn("a small aquatic animal", messages[-1]["content"][1]["text"])
 
     def test_description_file_accepts_wrapped_mapping(self):
         with tempfile.TemporaryDirectory() as directory:

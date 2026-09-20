@@ -383,9 +383,10 @@ The same mode can be selected for one dataset with
 requires at least one support shot, so it cannot be combined with `SHOTS="0"`.
 
 Instruction Enhancement is a separate training-free prompt variant. It adds a
-user-provided visual description of the requested category to every support and
-query instruction; it does not change images, weights, or the evaluation
-metric. The description file is a JSON object mapping category names to English
+user-provided visual description of the requested category to the final query
+instruction; support instructions remain in the baseline format. It does not
+change images, weights, or the evaluation metric. The description file is a JSON
+object mapping category names to English
 descriptions, optionally wrapped under `descriptions` (see
 `docs/category_descriptions.example.json`):
 

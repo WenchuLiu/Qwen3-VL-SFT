@@ -57,8 +57,9 @@ so baseline and VE cached results are not considered interchangeable by
 Instruction Enhancement is available with `--instruction-enhancement` (or
 `--ie`). Pass `--category-descriptions descriptions.json`, where the JSON maps
 each category name to a visual description. The description is inserted into
-both support and query questions; this is inference-time only and does not
-modify the model or training data. Episode records may alternatively carry a
+the final query question; support questions remain in the baseline format.
+This is inference-time only and does not modify the model or training data.
+Episode records may alternatively carry a
 `category_description` field. The result stores the selected prompt variant
 and the description-file SHA-256. IE can be combined with VE, but unlike VE it
 also supports zero-shot episodes.
