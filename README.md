@@ -283,6 +283,76 @@ DATASETS="FISH VISUALDIOR" SHOTS="1 2 4" \
 bash scripts/evaluate_fewshot.sh
 ```
 
+### Cross-domain evaluation prefixes
+
+All evaluation settings can be written as environment-variable prefixes before
+`bash scripts/evaluate_fewshot.sh`. Dataset and shot lists are space-separated
+strings.
+
+| Prefix | Meaning | Default |
+| --- | --- | --- |
+| `MODEL_PATH` | Model or checkpoint path (`CKPT` is an alias) | `weights/Qwen3-VL-4B-Instruct` |
+| `DATA_ROOT` | Root directory containing the six datasets | `data` |
+| `DATASETS` | Datasets to evaluate | `ArTaxOr clipart1k FISH NEU-DET UODD VISUALDIOR` |
+| `SHOTS` | Support-shot settings | `0 1 2 4` for baseline/IE; `1 2 4` for VE |
+| `IE=1` | Enable Instruction Enhancement | off |
+| `VE=1` | Enable Visual Enhancement | off |
+| `CATEGORY_DESCRIPTIONS` | Category-description JSON; also enables IE | unset |
+| `NUM_GPUS` | Number of persistent model replicas | `2` for baseline/IE; `4` for VE |
+| `DEVICE` | Device for single-GPU mode; multi-GPU uses `cuda:0..N-1` | `cuda:0` |
+| `BATCH_SIZE` | Generation batch size per replica | `1` for baseline/IE; `2` for VE |
+| `WORK_ROOT` | Output directory (`OUTPUT_DIR`/`EVAL_ROOT` are aliases) | `outputs/eval/fewshot/<EVAL_ID>` |
+| `EVAL_ID` | Output run name used by the default `WORK_ROOT` | mode-dependent |
+| `MAX_NEW_TOKENS` | Global generation-token override | dataset default: `1024`, or `2048` for VISUALDIOR |
+| `MIN_PIXELS` | Minimum image pixel budget | `3136` |
+| `MAX_IMAGE_PIXELS` (`MAX_PIXELS`) | Maximum image pixel budget | `640000` |
+| `MIN_BOX_AREA_RATIO` | Filter boxes smaller than this area ratio | `0` |
+| `MAX_QUERY_PAIRS` | Limit query image/category pairs for a smoke test | unset |
+| `SKIP_EXISTING=1` | Reuse complete result files | off |
+| `ATTENTION` | Attention implementation | `sdpa` |
+| `SEED` | Episode/evaluation seed | `43` |
+
+`IE=0` or omitting `IE` runs baseline. `INSTRUCTION_ENHANCEMENT=1` and
+`VISUAL_ENHANCEMENT=1` are accepted aliases. `CATEGORY_DESCRIPTIONS` must
+cover every category selected by `DATASETS`; use the complete mapping at
+`docs/cross_domain_category_descriptions.json` for the six registered datasets.
+With `NUM_GPUS=N`, the launcher starts replicas on `cuda:0` through
+`cuda:N-1`. VE requires at least one support shot and therefore cannot use
+`SHOTS="0"`.
+
+For a baseline 0-shot run on FISH:
+
+```bash
+IE=0 VE=0 \
+MODEL_PATH=weights/Qwen3-VL-4B-Instruct \
+DATA_ROOT=data DATASETS=FISH SHOTS="0" \
+NUM_GPUS=1 BATCH_SIZE=1 \
+bash scripts/evaluate_fewshot.sh
+```
+
+For the corresponding IE 0-shot run:
+
+```bash
+IE=1 \
+CATEGORY_DESCRIPTIONS=docs/cross_domain_category_descriptions.json \
+MODEL_PATH=weights/Qwen3-VL-4B-Instruct \
+DATA_ROOT=data DATASETS=FISH SHOTS="0" \
+NUM_GPUS=1 BATCH_SIZE=1 \
+bash scripts/evaluate_fewshot.sh
+```
+
+For all six datasets and all supported baseline/IE shot settings:
+
+```bash
+IE=1 \
+CATEGORY_DESCRIPTIONS=docs/cross_domain_category_descriptions.json \
+MODEL_PATH=weights/Qwen3-VL-4B-Instruct \
+DATA_ROOT=data \
+DATASETS="ArTaxOr clipart1k FISH NEU-DET UODD VISUALDIOR" \
+SHOTS="0 1 2 4" NUM_GPUS=4 \
+bash scripts/evaluate_fewshot.sh
+```
+
 Individual runs write to `outputs/eval/fewshot/qwen3-vl-4b-fewshot/<dataset>/`, keeping
 each dataset's `config.json`, `summary.json`, results, and `evaluation.log`
 separate.
