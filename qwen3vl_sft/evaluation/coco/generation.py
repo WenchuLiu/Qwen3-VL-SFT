@@ -10,9 +10,7 @@ from typing import Callable, Mapping, Sequence
 
 from .metrics import evaluate_episode_predictions, trainer_metrics
 from .protocol import (
-    IE_PROMPT_TEMPLATE_VERSION,
     PROMPT_TEMPLATE_VERSION,
-    ZERO_SHOT_PROMPT_VERSION,
     PROTOCOL_NAME,
     build_eval_messages,
     load_category_descriptions,
@@ -110,9 +108,8 @@ def generate_responses(
     ``visual_enhancement`` annotates support images with their GT boxes while
     leaving the query image untouched.  The flag is optional so the baseline
     prompt and all existing callers remain unchanged.  ``instruction_enhancement``
-    adds the target category description to the final query as a DetPO-style
-    annotator-instructions block without changing support examples, images, or
-    model weights.
+    adds the target category description to support and query questions without
+    changing the images or model weights.
     """
     import torch
 
@@ -259,7 +256,6 @@ def result_payload(
         if episodes_file.is_file()
         else None
     )
-    shot_keys = {str(key) for key in (result.get("metrics_by_shot") or {})}
     if visual_enhancement and instruction_enhancement:
         prompt_variant = "visual_and_instruction_enhanced"
     elif visual_enhancement:
@@ -268,16 +264,9 @@ def result_payload(
         prompt_variant = "instruction_enhanced"
     else:
         prompt_variant = "baseline"
-    if instruction_enhancement:
-        prompt_variant_version = IE_PROMPT_TEMPLATE_VERSION
-    elif shot_keys and shot_keys <= {"0"}:
-        prompt_variant_version = ZERO_SHOT_PROMPT_VERSION
-    else:
-        prompt_variant_version = PROMPT_TEMPLATE_VERSION
     return {
         "protocol": PROTOCOL_NAME,
         "prompt_template_version": PROMPT_TEMPLATE_VERSION,
-        "prompt_variant_version": prompt_variant_version,
         "model_path": model_path,
         "adapter_path": adapter_path,
         "episodes_path": episodes_path,

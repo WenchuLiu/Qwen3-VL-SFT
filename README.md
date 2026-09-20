@@ -40,9 +40,8 @@ implementation.
 The source of truth for the COCO protocol is
 `qwen3vl_sft/evaluation/coco/protocol.py`; the older flat module path is a
 compatibility facade. Do not copy its prompt into a shell script or a second
-evaluator. The baseline prompt template remains `inst-v5`; IE is an independent
-`detpo-ie-v2` runtime variant that follows DetPO's prompt layout by placing the
-category description in a separate annotator-instructions block on the final query. SFT targets omit
+evaluator. The default baseline prompt template is `inst-v5`; the optional IE
+variant appends a category description at inference time. SFT targets omit
 confidence, while the final evaluation query asks the model to estimate
 confidence for each predicted box.
 
@@ -384,9 +383,8 @@ The same mode can be selected for one dataset with
 requires at least one support shot, so it cannot be combined with `SHOTS="0"`.
 
 Instruction Enhancement is a separate training-free prompt variant. It adds a
-user-provided visual description of the requested category to the final query
-as a DetPO-style annotator-instructions block; support demonstrations retain the
-baseline question format. It does not change images, weights, or the evaluation
+user-provided visual description of the requested category to every support and
+query instruction; it does not change images, weights, or the evaluation
 metric. The description file is a JSON object mapping category names to English
 descriptions, optionally wrapped under `descriptions` (see
 `docs/category_descriptions.example.json`):
