@@ -32,8 +32,10 @@ from qwen3vl_sft.evaluation.coco.data import (
 from qwen3vl_sft.evaluation.coco.generation import file_sha256
 from qwen3vl_sft.evaluation.coco.metrics import evaluate_episode_predictions
 from qwen3vl_sft.evaluation.coco.protocol import (
+    IE_PROMPT_TEMPLATE_VERSION,
     PROMPT_TEMPLATE_VERSION,
     PROTOCOL_NAME,
+    ZERO_SHOT_PROMPT_VERSION,
     load_category_descriptions,
 )
 
@@ -467,7 +469,7 @@ def parse_args() -> argparse.Namespace:
         "--instruction-enhancement",
         dest="instruction_enhancement",
         action="store_true",
-        help="Add the requested category description to support and query instructions.",
+        help="Add the requested category description to the final query in DetPO style.",
     )
     parser.add_argument(
         "--category-descriptions",
@@ -583,6 +585,13 @@ def main() -> None:
             task["max_new_tokens"],
             expected_visual_enhancement=args.visual_enhancement,
             expected_instruction_enhancement=args.instruction_enhancement,
+            expected_prompt_variant_version=(
+                IE_PROMPT_TEMPLATE_VERSION
+                if args.instruction_enhancement
+                else ZERO_SHOT_PROMPT_VERSION
+                if task["shot"] == 0
+                else None
+            ),
             expected_category_descriptions_sha256=(
                 category_descriptions_sha256 if args.instruction_enhancement else None
             ),

@@ -81,6 +81,7 @@ def result_is_complete(
     *,
     expected_visual_enhancement: bool | None = None,
     expected_instruction_enhancement: bool | None = None,
+    expected_prompt_variant_version: str | None = None,
     expected_category_descriptions_sha256: str | None = None,
 ) -> bool:
     """Return whether a cached result has the fields needed for reuse."""
@@ -104,6 +105,11 @@ def result_is_complete(
         )
         if actual_instruction_enhancement != expected_instruction_enhancement:
             return False
+    if (
+        expected_prompt_variant_version is not None
+        and payload.get("prompt_variant_version") != expected_prompt_variant_version
+    ):
+        return False
     if (
         expected_category_descriptions_sha256 is not None
         and payload.get("category_descriptions_sha256")

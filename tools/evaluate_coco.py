@@ -44,7 +44,7 @@ def main() -> None:
         "--instruction-enhancement",
         dest="instruction_enhancement",
         action="store_true",
-        help="Add the requested category description to support and query instructions.",
+        help="Add the requested category description to the final query in DetPO style.",
     )
     parser.add_argument(
         "--category-descriptions",

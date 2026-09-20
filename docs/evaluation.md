@@ -34,11 +34,14 @@ support image + question -> support answer
 query image + question -> model generation
 ```
 
-The optional `--instruction-enhancement`/`--ie` variant appends the target
-category's visual description to each support and query question. Descriptions
-are supplied as a JSON category-to-text mapping with
+The optional `--instruction-enhancement`/`--ie` variant follows the DetPO
+prompt layout: it places the target category's visual description in a
+separate annotator-instructions block on the final query. Support questions
+retain the baseline format. Descriptions are supplied as a JSON category-to-text mapping with
 `--category-descriptions`; this is inference-time prompt context and requires
-no training or weight updates.
+no training or weight updates. The episode-level `prompt_template_version`
+remains `inst-v5`; zero-shot results use `prompt_variant_version=zero-shot-v1`
+for baseline and `detpo-ie-v2` for IE.
 
 The model never receives the query answer. The SFT record does contain that
 answer, but `loss_mode=last_assistant` makes the collator supervise only the

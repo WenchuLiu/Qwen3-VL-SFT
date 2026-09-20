@@ -16,7 +16,11 @@ from PIL import Image, ImageDraw
 from ...data.schema import validate_sft_record
 
 PROTOCOL_NAME = "positive_category_conditioned_icl"
+# Keep the established baseline/episode contract unchanged. IE is a separate
+# runtime prompt variant and is versioned independently below.
 PROMPT_TEMPLATE_VERSION = "inst-v5"
+ZERO_SHOT_PROMPT_VERSION = "zero-shot-v1"
+IE_PROMPT_TEMPLATE_VERSION = "detpo-ie-v2"
 LOSS_MODE = "last_assistant"
 VE_BOX_COLOR = (255, 0, 0)
 
@@ -49,12 +53,12 @@ def build_question(
     include_confidence: bool = False,
     category_description: str | None = None,
 ) -> str:
-    """Build the canonical category-conditioned grounding question.
+    """Build a baseline question or a DetPO-style IE question.
 
-    ``category_description`` is intentionally optional.  Keeping it out of
-    the default path makes the original baseline prompt byte-for-byte
-    compatible, while callers can add a natural-language description for a
-    training-free instruction-enhancement experiment.
+    The baseline path is kept byte-for-byte compatible. When a description is
+    provided, it follows DetPO's layout: the category name stays in the main
+    detection instruction, while the description is a separate annotator-
+    instructions block placed before the JSON output schema.
     """
     if not isinstance(category, str) or not category.strip():
         raise ValueError("category must be a non-empty string")
@@ -63,9 +67,33 @@ def build_question(
         if not isinstance(category_description, str) or not category_description.strip():
             raise ValueError("category_description must be a non-empty string when provided")
         category_description = category_description.strip()
-        target = f"{category} (visual description: {category_description})"
-    else:
-        target = category
+        image_phrase = "the query image" if query else "the image"
+        context_prefix = "Using the preceding in-context examples, " if query else ""
+        return (
+            f'{context_prefix}Identify and localize all instances of "{category}" '
+            f"in {image_phrase}.\n\n"
+            "Output Requirements:\n"
+            "- Return valid JSON only. Do not include explanations or extra text.\n"
+            "- Output a ranked list of detections sorted by confidence (highest first).\n"
+            "- Include at most 20 detections.\n"
+            "- If no objects are detected, return an empty list [].\n\n"
+            "For each detection, provide:\n"
+            ' - "bbox_2d": [x1, y1, x2, y2]\n'
+            "   * Coordinates are normalized to the range 0-1000.\n"
+            "   * (x1, y1) is the top-left corner and (x2, y2) is the bottom-right corner.\n"
+            f' - "label": "{category}"\n'
+            ' - "score": a float confidence score from 0.0 to 1.0.\n\n'
+            "Additional Constraints:\n"
+            f'- Only include detections that clearly correspond to "{category}".\n'
+            "- Avoid duplicate or highly overlapping boxes for the same object.\n"
+            "- Follow these annotator instructions to improve detection accuracy:\n\n"
+            f"{category_description}\n\n"
+            "Return a JSON list in the following format:\n"
+            "[\n"
+            f'  {{"bbox_2d": [x1, y1, x2, y2], "label": "{category}", "score": 0.95}}\n'
+            "]"
+        )
+    target = category
     prefix = "Using the preceding in-context examples, " if query else ""
     image_phrase = "the query image" if query else "the image"
     verb = "locate" if query else "Locate"
@@ -81,6 +109,39 @@ def build_question(
             "descending confidence."
         )
     return question + '[{"bbox_2d":[x1,y1,x2,y2],"label":"class_name"}].'
+
+
+def build_zero_shot_question(category: str) -> str:
+    """Build a normal single-image detection prompt with confidence scores.
+
+    This branch deliberately contains no few-shot or in-context wording. It is
+    used for zero-shot baseline evaluation; the IE zero-shot branch reuses the
+    DetPO-style version of ``build_question`` with a category description.
+    """
+    if not isinstance(category, str) or not category.strip():
+        raise ValueError("category must be a non-empty string")
+    category = category.strip()
+    return (
+        f'Identify and localize all instances of "{category}" in the image.\n\n'
+        "Output Requirements:\n"
+        "- Return valid JSON only. Do not include explanations or extra text.\n"
+        "- Output a ranked list of detections sorted by confidence (highest first).\n"
+        "- Include at most 20 detections.\n"
+        "- If no objects are detected, return an empty list [].\n\n"
+        "For each detection, provide:\n"
+        ' - "bbox_2d": [x1, y1, x2, y2]\n'
+        "   * Coordinates are normalized to the range 0-1000.\n"
+        "   * (x1, y1) is the top-left corner and (x2, y2) is the bottom-right corner.\n"
+        f' - "label": "{category}"\n'
+        ' - "score": a float confidence score from 0.0 to 1.0.\n\n'
+        "Additional Constraints:\n"
+        f'- Only include detections that clearly correspond to "{category}".\n'
+        "- Avoid duplicate or highly overlapping boxes for the same object.\n\n"
+        "Return a JSON list in the following format:\n"
+        "[\n"
+        f'  {{"bbox_2d": [x1, y1, x2, y2], "label": "{category}", "score": 0.95}}\n'
+        "]"
+    )
 
 
 def load_category_descriptions(path: str | Path) -> dict[str, str]:
@@ -303,10 +364,14 @@ def build_eval_messages(
     Support turns retain the score-free SFT schema.  The final query answer is
     omitted and its prompt explicitly requests model-estimated confidence.
     When ``visual_enhancement`` is enabled, red ground-truth boxes are drawn
-    on support images only; the query image is never annotated.  When
-    ``instruction_enhancement`` is enabled, the target category's description
-    is added to every support and query question.  Descriptions may be passed
-    in ``category_descriptions`` or embedded in the episode as
+    on support images only; the query image is never annotated. When
+    ``instruction_enhancement`` is enabled, the target category's
+    description is added to the final query using a DetPO-style annotator-
+    instructions block. Support questions remain baseline questions so their
+    in-context format is unchanged. With zero support shots, the function
+    emits a single normal detection turn without any in-context wording;
+    IE uses the DetPO single-turn layout in that branch. Descriptions may be passed in
+    ``category_descriptions`` or embedded in the episode as
     ``category_description``.
     """
     category = record.get("category")
@@ -333,13 +398,39 @@ def build_eval_messages(
                 "provide --category-descriptions or add category_description to the episode"
             )
 
+    if not support:
+        # Match DetPO's Qwen-VL zero-shot layout: one user turn, text before
+        # the image, no system message, and no references to demonstrations.
+        zero_shot_question = (
+            build_question(
+                category,
+                category_description=category_description,
+            )
+            if instruction_enhancement
+            else build_zero_shot_question(category)
+        )
+        return [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": zero_shot_question},
+                    {
+                        "type": "image",
+                        "image": _frame_image(query),
+                        "min_pixels": min_pixels,
+                        "max_pixels": max_pixels,
+                    },
+                ],
+            }
+        ]
+
     messages: list[dict] = [
         {"role": "system", "content": [{"type": "text", "text": EVAL_SYSTEM_PROMPT}]}
     ]
-    support_question = build_question(
-        category,
-        category_description=category_description,
-    )
+    # DetPO applies the class definition to the image being evaluated. Keep
+    # support demonstrations in the original format so IE does not alter the
+    # learned support question/answer pattern.
+    support_question = build_question(category)
     for frame in support:
         if not isinstance(frame, dict):
             raise ValueError("support frames must be objects")
