@@ -72,7 +72,7 @@ def build_question(
         if not isinstance(category_description, str) or not category_description.strip():
             raise ValueError("category_description must be a non-empty string when provided")
         category_description = category_description.strip()
-        target = f"{category} (visual description: {category_description})"
+        target = f"{category} — {category_description}"
     else:
         target = category
     prefix = "Using the preceding in-context examples, " if query else ""

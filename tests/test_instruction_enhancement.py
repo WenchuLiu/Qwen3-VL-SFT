@@ -65,7 +65,11 @@ class InstructionEnhancementTest(unittest.TestCase):
             for item in message["content"]
             if item.get("type") == "text"
         ]
-        described_texts = [text for text in texts if "visual description:" in text]
+        described_texts = [
+            text
+            for text in texts
+            if "fish — an aquatic animal with fins and scales" in text
+        ]
         self.assertEqual(len(described_texts), 2)
         self.assertTrue(
             all("an aquatic animal with fins and scales" in text for text in described_texts)
