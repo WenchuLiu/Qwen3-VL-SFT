@@ -6,26 +6,46 @@ for SFT, baseline evaluation, IE/VE evaluation, and DetPO evaluation.
 
 ## 🚀 Installation
 
-在仓库根目录执行：
+在仓库根目录执行以下命令，创建并安装项目所需的 `LLM` Conda 环境：
 
 ```bash
 ENV_NAME=LLM bash install_llm_env.sh
 conda activate LLM
 ```
 
-安装脚本会创建 Python 3.10 环境，并安装项目依赖。项目默认使用
-PyTorch `sdpa`，不要求安装 FlashAttention。需要 Linux、Conda 和可用的
-NVIDIA CUDA 环境。
+`install_llm_env.sh` 会自动创建 Python 3.10 环境并安装固定版本的
+PyTorch、Transformers、Qwen-VL-Utils、DeepSpeed、PEFT 及项目依赖。
+需要 Linux、Conda 和可用的 NVIDIA CUDA 环境。
+
+## 📦 Data & Weights Preparation
+
+所有路径都相对于仓库根目录。请将两个 Qwen3-VL 模型放在 `weights/` 下：
+
+```text
+weights/
+├── Qwen3-VL-4B-Instruct/
+└── Qwen3-VL-8B-Instruct/
+```
+
+请将六个跨域数据集放在 `data/` 下，目录名需要与下面保持一致：
+
+```text
+data/
+├── ArTaxOr/
+├── clipart1k/
+├── FISH/
+├── NEU-DET/
+├── UODD/
+└── VISUALDIOR/
+```
+
+每个数据集目录需要包含评测脚本使用的 `annotations/` 和图像目录；支持
+`new_train/new_test` 或 `train/test` 两种图像目录命名。DetPO 的类别描述文件
+已经包含在 `docs/cross-domain-instructions/` 中，无需额外下载。
 
 ## ⚡ Quick Start
 
-准备以下文件：
-
-- 基础模型：`weights/Qwen3-VL-4B-Instruct`
-- 六个跨域数据集：放在 `data/` 下（ArTaxOr、clipart1k、FISH、NEU-DET、UODD、VISUALDIOR）
-- DetPO prompt：仓库已提供在 `docs/cross-domain-instructions/`
-
-直接运行 DetPO 的 1/2/4-shot 评测：
+完成环境、模型和数据准备后，直接运行 DetPO 的 1/2/4-shot 评测：
 
 ```bash
 DETPO=1 \
