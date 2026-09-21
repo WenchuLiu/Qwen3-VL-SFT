@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # Canonical launcher for the cross-domain few-shot benchmark.
-# Set VE=1 for Visual Enhancement and IE=1 for instruction enhancement.
+# Set VE=1 for Visual Enhancement, IE=1 for Instruction Enhancement, or
+# DETPO=1 for the per-shot DetPO prompt files.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
@@ -16,6 +17,9 @@ VE_FLAG_IN_ARGS=0
 IE_MODE=0
 IE_FLAG_IN_ARGS=0
 CATEGORY_DESCRIPTIONS_FLAG_IN_ARGS=0
+DETPO_MODE=0
+DETPO_FLAG_IN_ARGS=0
+DETPO_PROMPTS_FLAG_IN_ARGS=0
 if [[ "${VE:-0}" == "1" || "${VISUAL_ENHANCEMENT:-0}" == "1" ]]; then
   VE_MODE=1
 fi
@@ -24,6 +28,12 @@ if [[ "${IE:-0}" == "1" || "${INSTRUCTION_ENHANCEMENT:-0}" == "1" ]]; then
 fi
 if [[ -n "${CATEGORY_DESCRIPTIONS:-}" ]]; then
   IE_MODE=1
+fi
+if [[ "${DETPO:-0}" == "1" || "${DETPO_PROMPT:-0}" == "1" ]]; then
+  DETPO_MODE=1
+fi
+if [[ -n "${DETPO_PROMPTS:-}" ]]; then
+  DETPO_MODE=1
 fi
 for argument in "$@"; do
   if [[ "${argument}" == "--ve" || "${argument}" == "--visual-enhancement" ]]; then
@@ -38,17 +48,37 @@ for argument in "$@"; do
     IE_MODE=1
     CATEGORY_DESCRIPTIONS_FLAG_IN_ARGS=1
   fi
+  if [[ "${argument}" == "--detpo" ]]; then
+    DETPO_MODE=1
+    DETPO_FLAG_IN_ARGS=1
+  fi
+  if [[ "${argument}" == "--detpo-prompts" || "${argument}" == --detpo-prompts=* || "${argument}" == "--detpo-prompt-root" || "${argument}" == --detpo-prompt-root=* ]]; then
+    DETPO_MODE=1
+    DETPO_PROMPTS_FLAG_IN_ARGS=1
+  fi
 done
+
+if [[ "${DETPO_MODE}" == "1" && "${IE_MODE}" == "1" ]]; then
+  echo "DETPO and IE are mutually exclusive prompt modes; choose one." >&2
+  exit 2
+fi
 
 if [[ "${VE_MODE}" == "1" ]]; then
   DEFAULT_SHOTS=(1 2 4)
-  if [[ "${IE_MODE}" == "1" ]]; then
+  if [[ "${DETPO_MODE}" == "1" ]]; then
+    EVAL_ID="${EVAL_ID:-qwen3-vl-4b-ve-detpo-fewshot}"
+  elif [[ "${IE_MODE}" == "1" ]]; then
     EVAL_ID="${EVAL_ID:-qwen3-vl-4b-ve-ie-fewshot}"
   else
     EVAL_ID="${EVAL_ID:-qwen3-vl-4b-ve-fewshot}"
   fi
   DEFAULT_NUM_GPUS=4
   DEFAULT_BATCH_SIZE=2
+elif [[ "${DETPO_MODE}" == "1" ]]; then
+  DEFAULT_SHOTS=(1 2 4)
+  EVAL_ID="${EVAL_ID:-qwen3-vl-4b-detpo-fewshot}"
+  DEFAULT_NUM_GPUS=2
+  DEFAULT_BATCH_SIZE=1
 elif [[ "${IE_MODE}" == "1" ]]; then
   DEFAULT_SHOTS=(0 1 2 4)
   EVAL_ID="${EVAL_ID:-qwen3-vl-4b-ie-fewshot}"
@@ -83,6 +113,7 @@ MIN_BOX_AREA_RATIO="${MIN_BOX_AREA_RATIO:-0}"
 ATTENTION="${ATTENTION:-sdpa}"
 DEVICE="${DEVICE:-cuda:0}"
 SEED="${SEED:-43}"
+DETPO_PROMPTS="${DETPO_PROMPTS:-${ROOT_DIR}/docs/cross-domain-instructions}"
 
 mkdir -p "${WORK_ROOT}"
 LOG_FILE="${LOG_FILE:-${WORK_ROOT}/evaluation.log}"
@@ -105,6 +136,10 @@ else
 fi
 echo "visual_enhancement=${VE_MODE}"
 echo "instruction_enhancement=${IE_MODE}"
+echo "detpo=${DETPO_MODE}"
+if [[ "${DETPO_MODE}" == "1" ]]; then
+  echo "detpo_prompts=${DETPO_PROMPTS}"
+fi
 if [[ -n "${CATEGORY_DESCRIPTIONS:-}" ]]; then
   echo "category_descriptions=${CATEGORY_DESCRIPTIONS}"
 fi
@@ -133,6 +168,12 @@ if [[ "${VE_MODE}" == "1" && "${VE_FLAG_IN_ARGS}" == "0" ]]; then
 fi
 if [[ "${IE_MODE}" == "1" && "${IE_FLAG_IN_ARGS}" == "0" ]]; then
   EVAL_ARGS+=(--instruction-enhancement)
+fi
+if [[ "${DETPO_MODE}" == "1" && "${DETPO_FLAG_IN_ARGS}" == "0" ]]; then
+  EVAL_ARGS+=(--detpo)
+fi
+if [[ "${DETPO_MODE}" == "1" && "${DETPO_PROMPTS_FLAG_IN_ARGS}" == "0" ]]; then
+  EVAL_ARGS+=(--detpo-prompts "${DETPO_PROMPTS}")
 fi
 if [[ -n "${CATEGORY_DESCRIPTIONS:-}" && "${CATEGORY_DESCRIPTIONS_FLAG_IN_ARGS}" == "0" ]]; then
   EVAL_ARGS+=(--category-descriptions "${CATEGORY_DESCRIPTIONS}")

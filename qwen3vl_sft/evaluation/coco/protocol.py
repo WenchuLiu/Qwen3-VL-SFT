@@ -310,6 +310,7 @@ def build_eval_messages(
     max_pixels: int,
     visual_enhancement: bool = False,
     instruction_enhancement: bool = False,
+    detpo: bool = False,
     category_descriptions: Mapping[str, str] | None = None,
 ) -> list[dict]:
     """Build the generation prompt for one fixed episode.
@@ -318,12 +319,13 @@ def build_eval_messages(
     omitted and its prompt explicitly requests model-estimated confidence.
     When ``visual_enhancement`` is enabled, red ground-truth boxes are drawn
     on support images only; the query image is never annotated. When
-    ``instruction_enhancement`` is enabled, the target category's description
-    is added to the final query question. With zero shots, this is the only
-    user turn; with support shots, support questions remain in the original
-    score-free SFT format. Descriptions may be passed in
-    ``category_descriptions`` or embedded in the episode as
-    ``category_description``.
+    ``instruction_enhancement`` or ``detpo`` is enabled, the target
+    category's description is added to the final query question. With zero
+    shots, this is the only user turn; with support shots, support questions
+    remain in the original score-free SFT format. Descriptions may be passed
+    in ``category_descriptions`` or embedded in the episode as
+    ``category_description``. ``detpo`` is a separately named prompt mode
+    because its per-shot descriptions are selected by the few-shot evaluator.
     """
     category = record.get("category")
     support = record.get("support")
@@ -336,8 +338,12 @@ def build_eval_messages(
         raise ValueError("evaluation record needs category, support, and query fields")
     if min_pixels < 1 or max_pixels < min_pixels:
         raise ValueError("invalid evaluation pixel budget")
+    if instruction_enhancement and detpo:
+        raise ValueError(
+            "instruction_enhancement and detpo are mutually exclusive prompt modes"
+        )
     category_description = None
-    if instruction_enhancement:
+    if instruction_enhancement or detpo:
         category_description = _resolve_category_description(
             category,
             embedded_description=record.get("category_description"),
@@ -345,7 +351,7 @@ def build_eval_messages(
         )
         if category_description is None:
             raise ValueError(
-                f"instruction enhancement requires a description for category {category!r}; "
+                f"the selected prompt mode requires a description for category {category!r}; "
                 "provide --category-descriptions or add category_description to the episode"
             )
 

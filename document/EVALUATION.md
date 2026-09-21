@@ -68,6 +68,21 @@ The repository provides `docs/cross_domain_category_descriptions.json`, which
 covers all 57 categories in ArTaxOr, Clipart1k, FISH, NEU-DET, UODD, and
 VISUALDIOR with domain-specific descriptions.
 
+DetPO is available as a separately named prompt mode for the detailed
+descriptions generated under `docs/cross-domain-instructions`. It selects a
+different JSON file for each dataset and shot, embeds that description in the
+final query instruction, and records the selected file and SHA-256 in the
+manifest/result. The default launcher evaluates 1/2/4-shot episodes:
+
+```bash
+DETPO=1 \
+MODEL_PATH=weights/Qwen3-VL-4B-Instruct DATA_ROOT=data \
+bash scripts/evaluate_fewshot.sh
+```
+
+Use `DETPO_PROMPTS=/path/to/cross-domain-instructions` to override the prompt
+root. DetPO and IE are mutually exclusive; it can be combined with VE.
+
 Every result records the protocol version, episode hash, preprocessing budget,
 generation budget, raw responses, parsed boxes, F1, and official COCO mAP.
 This makes a before/after comparison auditable and prevents silently comparing

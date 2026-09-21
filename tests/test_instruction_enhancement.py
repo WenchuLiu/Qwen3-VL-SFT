@@ -95,6 +95,25 @@ class InstructionEnhancementTest(unittest.TestCase):
         self.assertNotIn("fish is an aquatic animal", texts[1])
         self.assertIn("fish in the query image.", texts[-1])
 
+    def test_detpo_uses_embedded_per_shot_description_only_for_query(self):
+        record = {
+            **self.record,
+            "category_description": "a small aquatic animal with a streamlined body",
+        }
+        messages = build_eval_messages(
+            record,
+            min_pixels=1,
+            max_pixels=100,
+            detpo=True,
+        )
+        query_text = messages[-1]["content"][1]["text"]
+        support_text = messages[1]["content"][1]["text"]
+        self.assertIn(
+            "fish is a small aquatic animal with a streamlined body",
+            query_text,
+        )
+        self.assertNotIn("small aquatic animal", support_text)
+
     def test_episode_description_is_used_without_external_file(self):
         record = {**self.record, "category_description": "a small aquatic animal"}
         messages = build_eval_messages(

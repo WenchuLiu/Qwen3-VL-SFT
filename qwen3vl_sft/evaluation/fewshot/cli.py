@@ -74,6 +74,7 @@ def _generation_worker_loop(
     max_pixels: int,
     visual_enhancement: bool,
     instruction_enhancement: bool = False,
+    detpo: bool = False,
     category_descriptions: dict[str, str] | None = None,
 ) -> None:
     """Load one model replica and process generation tasks until shutdown."""
@@ -108,6 +109,7 @@ def _generation_worker_loop(
                 max_new_tokens=max_new_tokens,
                 visual_enhancement=visual_enhancement,
                 instruction_enhancement=instruction_enhancement,
+                detpo=detpo,
                 category_descriptions=category_descriptions,
                 progress_callback=report_progress,
             )
@@ -131,6 +133,7 @@ class GenerationRunner:
         max_pixels: int,
         visual_enhancement: bool = False,
         instruction_enhancement: bool = False,
+        detpo: bool = False,
         category_descriptions: dict[str, str] | None = None,
     ) -> None:
         import torch
@@ -144,6 +147,7 @@ class GenerationRunner:
         self.max_pixels = max_pixels
         self.visual_enhancement = visual_enhancement
         self.instruction_enhancement = instruction_enhancement
+        self.detpo = detpo
         self.category_descriptions = category_descriptions
         self.task_id = 0
         self.parallel = num_gpus > 1
@@ -186,6 +190,7 @@ class GenerationRunner:
                     max_pixels,
                     visual_enhancement,
                     instruction_enhancement,
+                    detpo,
                     category_descriptions,
                 ),
             )
@@ -213,6 +218,7 @@ class GenerationRunner:
                 max_new_tokens=max_new_tokens,
                 visual_enhancement=self.visual_enhancement,
                 instruction_enhancement=self.instruction_enhancement,
+                detpo=self.detpo,
                 category_descriptions=self.category_descriptions,
             )
 
@@ -277,6 +283,85 @@ class GenerationRunner:
         self.close(terminate=exc_type is not None)
 
 
+def _lookup_description(category: str, descriptions: dict[str, str]) -> str | None:
+    """Look up a category description while tolerating case-only name drift."""
+    description = descriptions.get(category)
+    if description is not None:
+        return description
+    folded_category = category.casefold()
+    for key, value in descriptions.items():
+        if key.casefold() == folded_category:
+            return value
+    return None
+
+
+def _resolve_detpo_prompt_path(
+    prompt_root: Path,
+    dataset_name: str,
+    dataset_dir: Path,
+    shot: int,
+) -> Path:
+    """Resolve the DetPO prompt file for one dataset/shot episode."""
+    if shot < 1:
+        raise ValueError("DetPO prompts are available only for 1/2/4-shot evaluation")
+    shot_dir = prompt_root / f"{shot}-shot"
+    stems = []
+    for stem in (dataset_dir.name, dataset_name):
+        if stem and stem.casefold() not in {value.casefold() for value in stems}:
+            stems.append(stem)
+
+    for stem in stems:
+        candidate = shot_dir / f"all_refined_class_instructions_{stem}.json"
+        if candidate.is_file():
+            return candidate.resolve()
+
+    # Keep the resolver useful when a dataset directory uses a different case
+    # from the generated file name.
+    expected_names = {
+        f"all_refined_class_instructions_{stem}".casefold() for stem in stems
+    }
+    for candidate in sorted(shot_dir.glob("all_refined_class_instructions_*.json")):
+        if candidate.stem.casefold() in expected_names:
+            return candidate.resolve()
+
+    expected = ", ".join(
+        f"{shot_dir / f'all_refined_class_instructions_{stem}.json'}" for stem in stems
+    )
+    raise FileNotFoundError(
+        f"DetPO prompt file not found for dataset {dataset_name!r}, {shot}-shot; "
+        f"expected one of: {expected}"
+    )
+
+
+def _embed_detpo_descriptions(
+    records: list[dict], descriptions: dict[str, str], dataset_name: str
+) -> list[dict]:
+    """Attach the selected DetPO description to every episode query category."""
+    missing = sorted(
+        {
+            str(record.get("category"))
+            for record in records
+            if isinstance(record.get("category"), str)
+            and _lookup_description(record["category"], descriptions) is None
+        }
+    )
+    if missing:
+        raise ValueError(
+            f"DetPO prompt file does not define categories for {dataset_name!r}: "
+            + ", ".join(missing)
+        )
+
+    enriched = []
+    for record in records:
+        category = record["category"]
+        description = _lookup_description(category, descriptions)
+        # The missing-category check above guarantees this is present. Keep the
+        # assertion local so the manifest never contains a null description.
+        assert description is not None
+        enriched.append({**record, "category_description": description})
+    return enriched
+
+
 def _build_manifest(
     *,
     dataset_name: str,
@@ -286,6 +371,9 @@ def _build_manifest(
     seed: int,
     min_box_area_ratio: float,
     max_query_pairs: int | None = None,
+    detpo_prompt_path: Path | None = None,
+    detpo_prompt_sha256: str | None = None,
+    detpo_descriptions: dict[str, str] | None = None,
 ) -> None:
     annotations_dir = dataset_dir / "annotations"
     support_annotation = annotations_dir / (
@@ -317,8 +405,11 @@ def _build_manifest(
         query_frames,
         shot=shot,
     )
+    if detpo_descriptions is not None:
+        records = _embed_detpo_descriptions(records, detpo_descriptions, dataset_name)
     if max_query_pairs is not None:
         records = records[:max_query_pairs]
+    is_detpo = detpo_descriptions is not None
     write_json(
         output,
         {
@@ -334,10 +425,20 @@ def _build_manifest(
             "min_box_area_ratio": min_box_area_ratio,
             "all_query_pairs": True,
             "max_query_pairs": max_query_pairs,
+            "detpo": is_detpo,
+            "prompt_method": "DetPO" if is_detpo else "baseline",
+            "detpo_prompt_path": (
+                str(detpo_prompt_path.resolve()) if detpo_prompt_path is not None else None
+            ),
+            "detpo_prompt_sha256": detpo_prompt_sha256,
             "records": records,
         },
     )
-    print(f"[{dataset_name} {shot}-shot] built {len(records)} episodes: {output}", flush=True)
+    method = "DetPO " if is_detpo else ""
+    print(
+        f"[{dataset_name} {shot}-shot] {method}built {len(records)} episodes: {output}",
+        flush=True,
+    )
 
 
 def _evaluate_one(
@@ -354,8 +455,11 @@ def _evaluate_one(
     attention: str,
     visual_enhancement: bool,
     instruction_enhancement: bool = False,
+    detpo: bool = False,
     category_descriptions_path: str | None = None,
     category_descriptions_sha256: str | None = None,
+    detpo_prompt_path: str | None = None,
+    detpo_prompt_sha256: str | None = None,
 ) -> dict:
     from qwen3vl_sft.evaluation.coco.generation import load_episodes, result_payload
 
@@ -379,8 +483,11 @@ def _evaluate_one(
         max_new_tokens=max_new_tokens,
         visual_enhancement=visual_enhancement,
         instruction_enhancement=instruction_enhancement,
+        detpo=detpo,
         category_descriptions_path=category_descriptions_path,
         category_descriptions_sha256=category_descriptions_sha256,
+        detpo_prompt_path=detpo_prompt_path,
+        detpo_prompt_sha256=detpo_prompt_sha256,
         coco_annotations_path=metadata.get("query_annotations"),
         runtime_seconds=time.monotonic() - started,
     )
@@ -406,7 +513,12 @@ def parse_args() -> argparse.Namespace:
         default=ROOT / "outputs" / "eval" / "fewshot" / "qwen3-vl-4b-base-fewshot",
     )
     parser.add_argument("--datasets", nargs="+", default=list(DEFAULT_DATASETS))
-    parser.add_argument("--shots", nargs="+", default=["0", "1", "2", "4"])
+    parser.add_argument(
+        "--shots",
+        nargs="+",
+        default=None,
+        help="Shot counts; defaults to 0/1/2/4, or 1/2/4 for --detpo.",
+    )
     parser.add_argument("--seed", type=int, default=43)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument(
@@ -478,6 +590,24 @@ def parse_args() -> argparse.Namespace:
             "--instruction-enhancement for local few-shot datasets."
         ),
     )
+    parser.add_argument(
+        "--detpo",
+        action="store_true",
+        help=(
+            "Use the per-dataset, per-shot DetPO prompt files from "
+            "--detpo-prompts."
+        ),
+    )
+    parser.add_argument(
+        "--detpo-prompts",
+        "--detpo-prompt-root",
+        type=Path,
+        default=ROOT / "docs" / "cross-domain-instructions",
+        help=(
+            "Root containing {1,2,4}-shot/all_refined_class_instructions_*.json "
+            "files used by --detpo."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -493,9 +623,21 @@ def main() -> None:
         raise ValueError("min box area ratio must be in [0, 1)")
     if args.max_query_pairs is not None and args.max_query_pairs < 1:
         raise ValueError("max query pairs must be positive")
-    shots = parse_shots([str(value) for value in args.shots], allow_zero=True)
+    shot_values = args.shots
+    if shot_values is None:
+        shot_values = ["1", "2", "4"] if args.detpo else ["0", "1", "2", "4"]
+    shots = parse_shots([str(value) for value in shot_values], allow_zero=True)
     if args.visual_enhancement and 0 in shots:
         raise ValueError("--ve/--visual-enhancement requires at least one support shot")
+    if args.detpo and args.instruction_enhancement:
+        raise ValueError("--detpo and --instruction-enhancement are mutually exclusive")
+    if args.detpo and args.category_descriptions is not None:
+        raise ValueError(
+            "--detpo selects per-shot prompt files; do not combine it with "
+            "--category-descriptions"
+        )
+    if args.detpo and 0 in shots:
+        raise ValueError("--detpo requires shots 1, 2, or 4; no 0-shot prompt is provided")
     if args.instruction_enhancement and args.category_descriptions is None:
         raise ValueError(
             "--ie/--instruction-enhancement requires --category-descriptions "
@@ -508,6 +650,9 @@ def main() -> None:
         category_descriptions_path = args.category_descriptions.expanduser().resolve()
         category_descriptions = load_category_descriptions(category_descriptions_path)
         category_descriptions_sha256 = file_sha256(category_descriptions_path)
+    detpo_prompt_root = args.detpo_prompts.expanduser().resolve()
+    if args.detpo and not detpo_prompt_root.is_dir():
+        raise NotADirectoryError(f"DetPO prompt root not found: {detpo_prompt_root}")
     work_dir = args.work_dir.expanduser().resolve()
     data_root = args.data_root.expanduser().resolve()
     model_path = (
@@ -533,16 +678,25 @@ def main() -> None:
                 if flat_work_dir
                 else work_dir / dataset_name / f"{shot}shot"
             )
-            tasks.append(
-                {
-                    "dataset": dataset_name,
-                    "dataset_dir": dataset_dir,
-                    "shot": shot,
-                    "manifest": shot_dir / "episodes.json",
-                    "result": shot_dir / "result.json",
-                    "max_new_tokens": max_new_tokens_by_dataset[dataset_name],
-                }
-            )
+            task = {
+                "dataset": dataset_name,
+                "dataset_dir": dataset_dir,
+                "shot": shot,
+                "manifest": shot_dir / "episodes.json",
+                "result": shot_dir / "result.json",
+                "max_new_tokens": max_new_tokens_by_dataset[dataset_name],
+            }
+            if args.detpo:
+                prompt_path = _resolve_detpo_prompt_path(
+                    detpo_prompt_root,
+                    dataset_name,
+                    dataset_dir,
+                    shot,
+                )
+                task["detpo_prompt_path"] = prompt_path
+                task["detpo_prompt_sha256"] = file_sha256(prompt_path)
+                task["detpo_descriptions"] = load_category_descriptions(prompt_path)
+            tasks.append(task)
 
     write_json(
         work_dir / "config.json",
@@ -567,6 +721,11 @@ def main() -> None:
             "max_query_pairs": args.max_query_pairs,
             "visual_enhancement": args.visual_enhancement,
             "instruction_enhancement": args.instruction_enhancement,
+            "detpo": args.detpo,
+            "prompt_method": "DetPO" if args.detpo else (
+                "IE" if args.instruction_enhancement else "baseline"
+            ),
+            "detpo_prompts_root": str(detpo_prompt_root) if args.detpo else None,
             "category_descriptions_path": (
                 str(category_descriptions_path) if category_descriptions_path else None
             ),
@@ -583,8 +742,12 @@ def main() -> None:
             task["max_new_tokens"],
             expected_visual_enhancement=args.visual_enhancement,
             expected_instruction_enhancement=args.instruction_enhancement,
+            expected_detpo=args.detpo,
             expected_category_descriptions_sha256=(
                 category_descriptions_sha256 if args.instruction_enhancement else None
+            ),
+            expected_detpo_prompt_sha256=(
+                task.get("detpo_prompt_sha256") if args.detpo else None
             ),
         )
     ]
@@ -608,6 +771,7 @@ def main() -> None:
         max_pixels=args.max_pixels,
         visual_enhancement=args.visual_enhancement,
         instruction_enhancement=args.instruction_enhancement,
+        detpo=args.detpo,
         category_descriptions=category_descriptions,
     ) as runner:
         for task in pending:
@@ -619,6 +783,9 @@ def main() -> None:
                 seed=args.seed,
                 min_box_area_ratio=args.min_box_area_ratio,
                 max_query_pairs=args.max_query_pairs,
+                detpo_prompt_path=task.get("detpo_prompt_path"),
+                detpo_prompt_sha256=task.get("detpo_prompt_sha256"),
+                detpo_descriptions=task.get("detpo_descriptions"),
             )
             payload = _evaluate_one(
                 runner=runner,
@@ -633,10 +800,19 @@ def main() -> None:
                 attention=args.attention,
                 visual_enhancement=args.visual_enhancement,
                 instruction_enhancement=args.instruction_enhancement,
+                detpo=args.detpo,
                 category_descriptions_path=(
                     str(category_descriptions_path) if category_descriptions_path else None
                 ),
                 category_descriptions_sha256=category_descriptions_sha256,
+                detpo_prompt_path=(
+                    str(task["detpo_prompt_path"])
+                    if args.detpo
+                    else None
+                ),
+                detpo_prompt_sha256=(
+                    task["detpo_prompt_sha256"] if args.detpo else None
+                ),
             )
             shot_key = str(task["shot"])
             metrics = payload["metrics_by_shot"][shot_key]
@@ -647,6 +823,10 @@ def main() -> None:
                 "shot": task["shot"],
                 "ve": args.visual_enhancement,
                 "ie": args.instruction_enhancement,
+                "detpo": args.detpo,
+                "prompt_method": "DetPO" if args.detpo else (
+                    "IE" if args.instruction_enhancement else "baseline"
+                ),
                 "instruction_enhancement": args.instruction_enhancement,
                 "episodes": metrics["episodes"],
                 "map_50_95": model_map["map_50_95"],

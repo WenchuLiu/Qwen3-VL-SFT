@@ -28,6 +28,17 @@ IE=1 CATEGORY_DESCRIPTIONS=docs/category_descriptions.example.json \
 bash scripts/evaluate_fewshot.sh
 ```
 
+DetPO uses the detailed, dataset- and shot-specific prompts under
+`docs/cross-domain-instructions`:
+
+```bash
+DETPO=1 bash scripts/evaluate_fewshot.sh
+```
+
+The DetPO launcher evaluates 1/2/4-shot episodes and selects
+`{shot}-shot/all_refined_class_instructions_{dataset}.json` for each task.
+Override the prompt root with `DETPO_PROMPTS=/path/to/prompts`.
+
 The repository includes the complete 57-category mapping for ArTaxOr,
 Clipart1k, FISH, NEU-DET, UODD, and VISUALDIOR at
 `docs/cross_domain_category_descriptions.json`.

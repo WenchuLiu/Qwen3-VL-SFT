@@ -297,6 +297,8 @@ strings.
 | `IE=1` | Enable Instruction Enhancement | off |
 | `VE=1` | Enable Visual Enhancement | off |
 | `CATEGORY_DESCRIPTIONS` | Category-description JSON; also enables IE | unset |
+| `DETPO=1` | Enable per-dataset/per-shot DetPO prompts | off |
+| `DETPO_PROMPTS` | DetPO prompt root | `docs/cross-domain-instructions` |
 | `NUM_GPUS` | Number of persistent model replicas | `2` for baseline/IE; `4` for VE |
 | `DEVICE` | Device for single-GPU mode; multi-GPU uses `cuda:0..N-1` | `cuda:0` |
 | `BATCH_SIZE` | Generation batch size per replica | `1` for baseline/IE; `2` for VE |
@@ -405,6 +407,21 @@ the result records `instruction_enhancement` and the description-file hash so
 cached baseline, VE, and IE runs remain distinguishable.
 The compatibility wrapper `scripts/cross_domain_datasets/run_ie.sh` sets
 `IE=1` for existing launcher workflows.
+
+DetPO is the separately named mode for the detailed prompts in
+`docs/cross-domain-instructions`. It selects the matching prompt file for each
+dataset and 1/2/4-shot setting, and records its path and SHA-256 in the result:
+
+```bash
+DETPO=1 \
+MODEL_PATH=weights/Qwen3-VL-4B-Instruct DATA_ROOT=data NUM_GPUS=4 \
+bash scripts/evaluate_fewshot.sh
+```
+
+Set `DETPO_PROMPTS` to use another prompt root. DetPO and IE are mutually
+exclusive and DetPO does not provide a 0-shot prompt; it can be combined with
+VE. The compatibility wrapper is
+`scripts/cross_domain_datasets/run_detpo.sh`.
 
 For all six registered cross-domain datasets, use the complete 57-category
 mapping generated for this benchmark:

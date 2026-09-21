@@ -100,6 +100,7 @@ def generate_responses(
     max_new_tokens: int,
     visual_enhancement: bool = False,
     instruction_enhancement: bool = False,
+    detpo: bool = False,
     category_descriptions: Mapping[str, str] | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> list[str]:
@@ -108,8 +109,10 @@ def generate_responses(
     ``visual_enhancement`` annotates support images with their GT boxes while
     leaving the query image untouched.  The flag is optional so the baseline
     prompt and all existing callers remain unchanged.  ``instruction_enhancement``
-    adds the target category description to the final query question without
-    changing support questions, images, or model weights.
+    or ``detpo`` adds the target category description to the final query
+    question without changing support questions, images, or model weights.
+    The two flags are separate names for the two prompt experiments and
+    cannot be enabled together.
     """
     import torch
 
@@ -148,6 +151,7 @@ def generate_responses(
                     max_pixels=max_pixels,
                     visual_enhancement=visual_enhancement,
                     instruction_enhancement=instruction_enhancement,
+                    detpo=detpo,
                     category_descriptions=category_descriptions,
                 )
                 for record in batch
@@ -209,6 +213,7 @@ def evaluate_loaded_model(
     max_new_tokens: int,
     visual_enhancement: bool = False,
     instruction_enhancement: bool = False,
+    detpo: bool = False,
     category_descriptions: Mapping[str, str] | None = None,
     coco_annotations_path: str | None = None,
 ) -> dict:
@@ -223,6 +228,7 @@ def evaluate_loaded_model(
         max_new_tokens=max_new_tokens,
         visual_enhancement=visual_enhancement,
         instruction_enhancement=instruction_enhancement,
+        detpo=detpo,
         category_descriptions=category_descriptions,
     )
     return evaluate_episode_predictions(
@@ -245,8 +251,11 @@ def result_payload(
     max_new_tokens: int,
     visual_enhancement: bool = False,
     instruction_enhancement: bool = False,
+    detpo: bool = False,
     category_descriptions_path: str | None = None,
     category_descriptions_sha256: str | None = None,
+    detpo_prompt_path: str | None = None,
+    detpo_prompt_sha256: str | None = None,
     coco_annotations_path: str | None = None,
     runtime_seconds: float | None = None,
 ) -> dict:
@@ -256,7 +265,15 @@ def result_payload(
         if episodes_file.is_file()
         else None
     )
-    if visual_enhancement and instruction_enhancement:
+    if instruction_enhancement and detpo:
+        raise ValueError(
+            "instruction_enhancement and detpo are mutually exclusive prompt modes"
+        )
+    if visual_enhancement and detpo:
+        prompt_variant = "visual_and_detpo"
+    elif detpo:
+        prompt_variant = "detpo"
+    elif visual_enhancement and instruction_enhancement:
         prompt_variant = "visual_and_instruction_enhanced"
     elif visual_enhancement:
         prompt_variant = "visual_enhanced"
@@ -264,6 +281,16 @@ def result_payload(
         prompt_variant = "instruction_enhanced"
     else:
         prompt_variant = "baseline"
+    if detpo_prompt_path is None and detpo:
+        detpo_prompt_path = category_descriptions_path
+    if detpo_prompt_sha256 is None and detpo:
+        detpo_prompt_sha256 = category_descriptions_sha256
+    if detpo:
+        prompt_method = "DetPO"
+    elif instruction_enhancement:
+        prompt_method = "IE"
+    else:
+        prompt_method = "baseline"
     return {
         "protocol": PROTOCOL_NAME,
         "prompt_template_version": PROMPT_TEMPLATE_VERSION,
@@ -283,9 +310,13 @@ def result_payload(
         "instruction_enhancement": bool(instruction_enhancement),
         # Keep a short compatibility key alongside the descriptive name.
         "ie": bool(instruction_enhancement),
+        "detpo": bool(detpo),
+        "prompt_method": prompt_method,
         "prompt_variant": prompt_variant,
         "category_descriptions_path": category_descriptions_path,
         "category_descriptions_sha256": category_descriptions_sha256,
+        "detpo_prompt_path": detpo_prompt_path,
+        "detpo_prompt_sha256": detpo_prompt_sha256,
         "coco_annotations_path": coco_annotations_path,
         "runtime_seconds": runtime_seconds,
         **result,
@@ -305,6 +336,7 @@ def evaluate_checkpoint(
     attention: str,
     visual_enhancement: bool = False,
     instruction_enhancement: bool = False,
+    detpo: bool = False,
     category_descriptions_path: str | None = None,
 ) -> dict:
     import torch
@@ -345,6 +377,7 @@ def evaluate_checkpoint(
         max_new_tokens=max_new_tokens,
         visual_enhancement=visual_enhancement,
         instruction_enhancement=instruction_enhancement,
+        detpo=detpo,
         category_descriptions=category_descriptions,
         coco_annotations_path=coco_annotations_path,
     )
@@ -360,6 +393,7 @@ def evaluate_checkpoint(
         max_new_tokens=max_new_tokens,
         visual_enhancement=visual_enhancement,
         instruction_enhancement=instruction_enhancement,
+        detpo=detpo,
         category_descriptions_path=description_path,
         category_descriptions_sha256=description_hash,
         coco_annotations_path=coco_annotations_path,
