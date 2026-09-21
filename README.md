@@ -136,7 +136,9 @@ NUM_GPUS=4 \
 bash scripts/evaluate_fewshot.sh
 ```
 
-DetPO 不支持 0-shot，但可以与 VE 组合；DetPO 和 IE 不能同时启用。
+DetPO 使用原始的单图详细检测 prompt；shot 只决定读取哪个
+`all_refined_class_instructions_*.json` 描述文件，不会再拼接 IE 的
+`category is ...` 或 support/query ICL prompt。DetPO 和 IE/VE 不能同时启用。
 评测结果包含 `mAP@50:95`、`AP50`、`AP75`、预测框和原始模型输出。
 使用 `SKIP_EXISTING=1` 可以跳过已完成的结果。
 

@@ -37,6 +37,8 @@ DETPO=1 bash scripts/evaluate_fewshot.sh
 
 The DetPO launcher evaluates 1/2/4-shot episodes and selects
 `{shot}-shot/all_refined_class_instructions_{dataset}.json` for each task.
+It uses the original DetPO single-image prompt rather than the IE ICL
+question; the shot controls which optimized description file is selected.
 Override the prompt root with `DETPO_PROMPTS=/path/to/prompts`.
 
 The repository includes the complete 57-category mapping for ArTaxOr,

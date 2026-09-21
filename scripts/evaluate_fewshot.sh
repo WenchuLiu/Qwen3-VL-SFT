@@ -62,6 +62,10 @@ if [[ "${DETPO_MODE}" == "1" && "${IE_MODE}" == "1" ]]; then
   echo "DETPO and IE are mutually exclusive prompt modes; choose one." >&2
   exit 2
 fi
+if [[ "${DETPO_MODE}" == "1" && "${VE_MODE}" == "1" ]]; then
+  echo "DetPO uses the original single-image prompt and cannot be combined with VE." >&2
+  exit 2
+fi
 
 if [[ "${VE_MODE}" == "1" ]]; then
   DEFAULT_SHOTS=(1 2 4)

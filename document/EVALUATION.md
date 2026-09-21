@@ -70,9 +70,12 @@ VISUALDIOR with domain-specific descriptions.
 
 DetPO is available as a separately named prompt mode for the detailed
 descriptions generated under `docs/cross-domain-instructions`. It selects a
-different JSON file for each dataset and shot, embeds that description in the
-final query instruction, and records the selected file and SHA-256 in the
-manifest/result. The default launcher evaluates 1/2/4-shot episodes:
+different JSON file for each dataset and shot, then follows the original
+DetPO Qwen3-VL-8B application prompt: one user turn containing the detailed
+detection instruction, the selected description under the annotator
+instructions, and the query image. It does not add the IE `category is ...`
+sentence or ICL support/query turns. The selected file and SHA-256 are stored
+in the manifest/result. The default launcher evaluates 1/2/4-shot episodes:
 
 ```bash
 DETPO=1 \
@@ -81,7 +84,8 @@ bash scripts/evaluate_fewshot.sh
 ```
 
 Use `DETPO_PROMPTS=/path/to/cross-domain-instructions` to override the prompt
-root. DetPO and IE are mutually exclusive; it can be combined with VE.
+root. DetPO and IE are mutually exclusive, and the original single-image
+DetPO mode cannot be combined with VE.
 
 Every result records the protocol version, episode hash, preprocessing budget,
 generation budget, raw responses, parsed boxes, F1, and official COCO mAP.

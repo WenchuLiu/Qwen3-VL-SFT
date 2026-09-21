@@ -84,6 +84,7 @@ def result_is_complete(
     expected_detpo: bool | None = None,
     expected_category_descriptions_sha256: str | None = None,
     expected_detpo_prompt_sha256: str | None = None,
+    expected_detpo_prompt_version: str | None = None,
 ) -> bool:
     """Return whether a cached result has the fields needed for reuse."""
     if not path.is_file():
@@ -118,6 +119,11 @@ def result_is_complete(
         expected_detpo_prompt_sha256 is not None
         and payload.get("detpo_prompt_sha256")
         != expected_detpo_prompt_sha256
+    ):
+        return False
+    if (
+        expected_detpo_prompt_version is not None
+        and payload.get("detpo_prompt_version") != expected_detpo_prompt_version
     ):
         return False
     return (

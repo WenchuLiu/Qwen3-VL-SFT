@@ -17,6 +17,10 @@ from ...data.schema import validate_sft_record
 
 PROTOCOL_NAME = "positive_category_conditioned_icl"
 PROMPT_TEMPLATE_VERSION = "inst-v5"
+# This follows the prompt used by ../DetPO/detpo/utils.py for Qwen3-VL-8B.
+# Keep it separate from the ICL template version so changing DetPO does not
+# invalidate baseline/IE episode manifests.
+DETPO_PROMPT_VERSION = "detpo-original-qwen3-vl-8b-v1"
 LOSS_MODE = "last_assistant"
 VE_BOX_COLOR = (255, 0, 0)
 
@@ -95,6 +99,58 @@ def build_question(
             "descending confidence."
         )
     return question + '[{"bbox_2d":[x1,y1,x2,y2],"label":"class_name"}].'
+
+
+def build_detpo_question(category: str, category_description: str) -> str:
+    """Build the original DetPO single-image detection prompt.
+
+    DetPO's Qwen3-VL-8B inference path does not use the project's ICL system
+    prompt or support/query turns.  It sends one detailed user instruction to
+    the query image and places the generated category description directly
+    under the annotator-instruction section.
+
+    The upstream DetPO prompt asks for pixel coordinates.  This evaluator's
+    annotations, parser, and metrics use 0-1000 normalized coordinates, so
+    only that coordinate convention is adapted here; the rest of the prompt
+    follows the upstream structure and requirements.
+    """
+    if not isinstance(category, str) or not category.strip():
+        raise ValueError("category must be a non-empty string")
+    if not isinstance(category_description, str) or not category_description.strip():
+        raise ValueError("category_description must be a non-empty string")
+    category = category.strip()
+    category_description = category_description.strip()
+
+    return (
+        f'Identify and localize all instances of "{category}" in the image.\n\n'
+        "Output Requirements:\n"
+        "- Return valid JSON only. Do not include explanations or extra text.\n"
+        "- Output a ranked list of detections sorted by confidence (highest first).\n"
+        "- Include at most 20 detections.\n"
+        "- If no objects are detected, return an empty list [].\n\n"
+        "For each detection, provide:\n"
+        '- "bbox_2d": [x1, y1, x2, y2]\n'
+        "    * 0-1000 normalized coordinates used by this evaluator.\n"
+        "    * (x1, y1) = top-left corner.\n"
+        "    * (x2, y2) = bottom-right corner.\n"
+        f'- "label": "{category}"\n'
+        '- "score": float confidence score from 0.0 (lowest) to 1.0 '
+        "(highest) indicating the likelihood that the bounding box contains "
+        "the specified object.\n\n"
+        "Additional Constraints:\n"
+        f'- Only include detections that clearly correspond to "{category}".\n'
+        "- Avoid duplicate or highly overlapping boxes for the same object.\n"
+        "- Follow these annotator instructions to improve detection accuracy:\n\n"
+        f"{category_description}\n\n"
+        "Return a JSON list in the following format:\n"
+        "[\n"
+        "  {\n"
+        '    "bbox_2d": [x1, y1, x2, y2],\n'
+        f'    "label": "{category}",\n'
+        '    "score": 0.95\n'
+        "  }\n"
+        "]"
+    )
 
 
 def load_category_descriptions(path: str | Path) -> dict[str, str]:
@@ -318,14 +374,15 @@ def build_eval_messages(
     Support turns retain the score-free SFT schema.  The final query answer is
     omitted and its prompt explicitly requests model-estimated confidence.
     When ``visual_enhancement`` is enabled, red ground-truth boxes are drawn
-    on support images only; the query image is never annotated. When
-    ``instruction_enhancement`` or ``detpo`` is enabled, the target
-    category's description is added to the final query question. With zero
-    shots, this is the only user turn; with support shots, support questions
-    remain in the original score-free SFT format. Descriptions may be passed
-    in ``category_descriptions`` or embedded in the episode as
-    ``category_description``. ``detpo`` is a separately named prompt mode
-    because its per-shot descriptions are selected by the few-shot evaluator.
+    on support images only; the query image is never annotated.
+    ``instruction_enhancement`` adds a category description to the final ICL
+    query. ``detpo`` is different: it follows the original DetPO application
+    prompt and sends only one user turn containing the detailed instruction
+    and query image, without a system message or support/query ICL turns.
+    Descriptions may be passed in ``category_descriptions`` or embedded in the
+    episode as ``category_description``. ``detpo`` is a separately named
+    prompt mode because its per-shot descriptions are selected by the
+    few-shot evaluator.
     """
     category = record.get("category")
     support = record.get("support")
@@ -342,6 +399,11 @@ def build_eval_messages(
         raise ValueError(
             "instruction_enhancement and detpo are mutually exclusive prompt modes"
         )
+    if visual_enhancement and detpo:
+        raise ValueError(
+            "detpo uses the original single-image prompt and cannot be combined "
+            "with visual_enhancement"
+        )
     category_description = None
     if instruction_enhancement or detpo:
         category_description = _resolve_category_description(
@@ -354,6 +416,27 @@ def build_eval_messages(
                 f"the selected prompt mode requires a description for category {category!r}; "
                 "provide --category-descriptions or add category_description to the episode"
             )
+
+    if detpo:
+        # The upstream DetPO Qwen3-VL-8B path is single-image inference.  Do
+        # not wrap it in the project's ICL system/support/query conversation.
+        return [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": build_detpo_question(category, category_description),
+                    },
+                    {
+                        "type": "image",
+                        "image": _frame_image(query),
+                        "min_pixels": min_pixels,
+                        "max_pixels": max_pixels,
+                    },
+                ],
+            }
+        ]
 
     zero_shot = not support
     messages: list[dict] = [

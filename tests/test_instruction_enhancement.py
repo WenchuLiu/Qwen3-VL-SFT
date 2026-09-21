@@ -95,7 +95,7 @@ class InstructionEnhancementTest(unittest.TestCase):
         self.assertNotIn("fish is an aquatic animal", texts[1])
         self.assertIn("fish in the query image.", texts[-1])
 
-    def test_detpo_uses_embedded_per_shot_description_only_for_query(self):
+    def test_detpo_uses_original_single_image_prompt(self):
         record = {
             **self.record,
             "category_description": "a small aquatic animal with a streamlined body",
@@ -106,13 +106,30 @@ class InstructionEnhancementTest(unittest.TestCase):
             max_pixels=100,
             detpo=True,
         )
-        query_text = messages[-1]["content"][1]["text"]
-        support_text = messages[1]["content"][1]["text"]
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["role"], "user")
+        self.assertEqual(messages[0]["content"][0]["type"], "text")
+        self.assertEqual(messages[0]["content"][1]["type"], "image")
+        self.assertEqual(messages[0]["content"][1]["image"], "/tmp/query.jpg")
+        query_text = messages[0]["content"][0]["text"]
         self.assertIn(
-            "fish is a small aquatic animal with a streamlined body",
+            'Identify and localize all instances of "fish" in the image.',
             query_text,
         )
-        self.assertNotIn("small aquatic animal", support_text)
+        self.assertIn("Output Requirements:", query_text)
+        self.assertIn("Include at most 20 detections.", query_text)
+        self.assertIn(
+            "Follow these annotator instructions to improve detection accuracy:",
+            query_text,
+        )
+        self.assertIn(
+            "a small aquatic animal with a streamlined body",
+            query_text,
+        )
+        self.assertIn('"score": 0.95', query_text)
+        self.assertIn("0-1000 normalized coordinates", query_text)
+        self.assertNotIn("fish is a small aquatic animal", query_text)
+        self.assertNotIn("in-context examples", query_text)
 
     def test_episode_description_is_used_without_external_file(self):
         record = {**self.record, "category_description": "a small aquatic animal"}

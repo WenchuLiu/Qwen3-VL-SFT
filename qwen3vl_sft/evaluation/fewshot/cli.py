@@ -32,6 +32,7 @@ from qwen3vl_sft.evaluation.coco.data import (
 from qwen3vl_sft.evaluation.coco.generation import file_sha256
 from qwen3vl_sft.evaluation.coco.metrics import evaluate_episode_predictions
 from qwen3vl_sft.evaluation.coco.protocol import (
+    DETPO_PROMPT_VERSION,
     PROMPT_TEMPLATE_VERSION,
     PROTOCOL_NAME,
     load_category_descriptions,
@@ -431,6 +432,7 @@ def _build_manifest(
                 str(detpo_prompt_path.resolve()) if detpo_prompt_path is not None else None
             ),
             "detpo_prompt_sha256": detpo_prompt_sha256,
+            "detpo_prompt_version": DETPO_PROMPT_VERSION if is_detpo else None,
             "records": records,
         },
     )
@@ -460,6 +462,7 @@ def _evaluate_one(
     category_descriptions_sha256: str | None = None,
     detpo_prompt_path: str | None = None,
     detpo_prompt_sha256: str | None = None,
+    detpo_prompt_version: str | None = None,
 ) -> dict:
     from qwen3vl_sft.evaluation.coco.generation import load_episodes, result_payload
 
@@ -488,6 +491,7 @@ def _evaluate_one(
         category_descriptions_sha256=category_descriptions_sha256,
         detpo_prompt_path=detpo_prompt_path,
         detpo_prompt_sha256=detpo_prompt_sha256,
+        detpo_prompt_version=detpo_prompt_version,
         coco_annotations_path=metadata.get("query_annotations"),
         runtime_seconds=time.monotonic() - started,
     )
@@ -631,6 +635,11 @@ def main() -> None:
         raise ValueError("--ve/--visual-enhancement requires at least one support shot")
     if args.detpo and args.instruction_enhancement:
         raise ValueError("--detpo and --instruction-enhancement are mutually exclusive")
+    if args.detpo and args.visual_enhancement:
+        raise ValueError(
+            "--detpo uses the original single-image prompt and cannot be combined "
+            "with --ve/--visual-enhancement"
+        )
     if args.detpo and args.category_descriptions is not None:
         raise ValueError(
             "--detpo selects per-shot prompt files; do not combine it with "
@@ -722,6 +731,7 @@ def main() -> None:
             "visual_enhancement": args.visual_enhancement,
             "instruction_enhancement": args.instruction_enhancement,
             "detpo": args.detpo,
+            "detpo_prompt_version": DETPO_PROMPT_VERSION if args.detpo else None,
             "prompt_method": "DetPO" if args.detpo else (
                 "IE" if args.instruction_enhancement else "baseline"
             ),
@@ -748,6 +758,9 @@ def main() -> None:
             ),
             expected_detpo_prompt_sha256=(
                 task.get("detpo_prompt_sha256") if args.detpo else None
+            ),
+            expected_detpo_prompt_version=(
+                DETPO_PROMPT_VERSION if args.detpo else None
             ),
         )
     ]
@@ -812,6 +825,9 @@ def main() -> None:
                 ),
                 detpo_prompt_sha256=(
                     task["detpo_prompt_sha256"] if args.detpo else None
+                ),
+                detpo_prompt_version=(
+                    DETPO_PROMPT_VERSION if args.detpo else None
                 ),
             )
             shot_key = str(task["shot"])

@@ -10,6 +10,7 @@ from typing import Callable, Mapping, Sequence
 
 from .metrics import evaluate_episode_predictions, trainer_metrics
 from .protocol import (
+    DETPO_PROMPT_VERSION,
     PROMPT_TEMPLATE_VERSION,
     PROTOCOL_NAME,
     build_eval_messages,
@@ -109,10 +110,10 @@ def generate_responses(
     ``visual_enhancement`` annotates support images with their GT boxes while
     leaving the query image untouched.  The flag is optional so the baseline
     prompt and all existing callers remain unchanged.  ``instruction_enhancement``
-    or ``detpo`` adds the target category description to the final query
-    question without changing support questions, images, or model weights.
-    The two flags are separate names for the two prompt experiments and
-    cannot be enabled together.
+    adds the target category description to the final ICL query. ``detpo``
+    uses the original DetPO single-image prompt and does not send support
+    frames. The two flags are separate names for the two prompt experiments
+    and cannot be enabled together.
     """
     import torch
 
@@ -256,6 +257,7 @@ def result_payload(
     category_descriptions_sha256: str | None = None,
     detpo_prompt_path: str | None = None,
     detpo_prompt_sha256: str | None = None,
+    detpo_prompt_version: str | None = None,
     coco_annotations_path: str | None = None,
     runtime_seconds: float | None = None,
 ) -> dict:
@@ -270,8 +272,11 @@ def result_payload(
             "instruction_enhancement and detpo are mutually exclusive prompt modes"
         )
     if visual_enhancement and detpo:
-        prompt_variant = "visual_and_detpo"
-    elif detpo:
+        raise ValueError(
+            "detpo uses the original single-image prompt and cannot be combined "
+            "with visual_enhancement"
+        )
+    if detpo:
         prompt_variant = "detpo"
     elif visual_enhancement and instruction_enhancement:
         prompt_variant = "visual_and_instruction_enhanced"
@@ -285,6 +290,8 @@ def result_payload(
         detpo_prompt_path = category_descriptions_path
     if detpo_prompt_sha256 is None and detpo:
         detpo_prompt_sha256 = category_descriptions_sha256
+    if detpo and detpo_prompt_version is None:
+        detpo_prompt_version = DETPO_PROMPT_VERSION
     if detpo:
         prompt_method = "DetPO"
     elif instruction_enhancement:
@@ -317,6 +324,7 @@ def result_payload(
         "category_descriptions_sha256": category_descriptions_sha256,
         "detpo_prompt_path": detpo_prompt_path,
         "detpo_prompt_sha256": detpo_prompt_sha256,
+        "detpo_prompt_version": detpo_prompt_version,
         "coco_annotations_path": coco_annotations_path,
         "runtime_seconds": runtime_seconds,
         **result,
