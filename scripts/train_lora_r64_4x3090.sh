@@ -6,8 +6,8 @@ set -euo pipefail
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
 MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-weights/Qwen3-VL-4B-Instruct}"
-DATASET="${DATASET:?Set DATASET to a JSON/JSONL SFT file}"
-DATA_ROOT="${DATA_ROOT:-.}"
+DATASET="${DATASET:-data/coco/train_sft_10pct_1to2to4_11829_inst-v5.json}"
+DATA_ROOT="${DATA_ROOT:-data}"
 RUN_ID="${RUN_ID:-qwen3vl-4b-r64-4x3090-$(date +%Y%m%d-%H%M%S)}"
 OUTPUT_DIR="${OUTPUT_DIR:-outputs/train/sft/${RUN_ID}}"
 
