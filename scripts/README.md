@@ -68,7 +68,8 @@ The `train_lora_r64_4x3090.sh` preset evaluates after every epoch using
 for 1/2/4-shot evaluation). `DATA_ROOT` should point to a directory containing
 the local COCO images, normally `COCO/train2017`, `COCO/val2017`, and
 `COCO/annotations`; stale absolute paths in manifests are relocated under this
-root automatically.
+root automatically. The launcher writes terminal output to
+`${OUTPUT_DIR}/train.log` by default; set `LOG_FILE` to override it.
 Override `EVAL_EPISODES` to use another manifest, or pass
 `--eval-mode none --eval-strategy no` to disable in-training evaluation.
 

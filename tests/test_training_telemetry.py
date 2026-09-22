@@ -2,6 +2,7 @@ import importlib
 import os
 import subprocess
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -108,6 +109,43 @@ class TrainingTelemetryTest(unittest.TestCase):
             "--coco-eval-episodes data/coco/val_episodes_500_124_inst-v5.json",
             command,
         )
+
+    def test_4x3090_launcher_writes_a_training_log(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capture = root / "captured-args"
+            interpreter = root / "capture-python"
+            interpreter.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = \"-\" ]; then\n"
+                "  cat >/dev/null\n"
+                "  exit 0\n"
+                "fi\n"
+                "printf '%s\\n' \"$@\" > \"$CAPTURE_ARGS\"\n"
+            )
+            interpreter.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "PYTHON_BIN": str(interpreter),
+                    "CAPTURE_ARGS": str(capture),
+                    "OUTPUT_DIR": str(root / "run"),
+                    "REPORT_TO": "none",
+                }
+            )
+
+            subprocess.run(
+                ["bash", "scripts/train_lora_r64_4x3090.sh"],
+                cwd=ROOT,
+                env=environment,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            log_file = root / "run" / "train.log"
+            self.assertTrue(log_file.is_file())
+            self.assertIn(f"log_file={log_file}", log_file.read_text())
 
 
 if __name__ == "__main__":

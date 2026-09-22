@@ -82,6 +82,13 @@ if [[ "${DRY_RUN:-0}" == "1" ]]; then
   exit 0
 fi
 
+# Keep the terminal stream visible while retaining a per-run training log.
+LOG_FILE="${LOG_FILE:-${OUTPUT_DIR}/train.log}"
+mkdir -p "${OUTPUT_DIR}" "$(dirname "${LOG_FILE}")"
+exec > >(tee -a "${LOG_FILE}") 2>&1
+echo "output_dir=${OUTPUT_DIR}"
+echo "log_file=${LOG_FILE}"
+
 "${PYTHON_BIN}" - <<'PY'
 import torch
 
