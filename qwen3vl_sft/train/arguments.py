@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 
-
 DEFAULT_MIN_PIXELS = 28 * 28 * 4
 DEFAULT_MAX_PIXELS = 800 * 800
 
@@ -131,7 +130,7 @@ def build_train_parser() -> argparse.ArgumentParser:
     )
     add_data_arguments(parser)
     add_training_arguments(parser)
-    parser.add_argument("--coco-eval-episodes", default=None)
+    parser.add_argument("--coco-eval-episodes", nargs="+", default=None)
     parser.add_argument("--coco-eval-batch-size", type=int, default=1)
     parser.add_argument("--coco-eval-min-pixels", type=int, default=None)
     parser.add_argument("--coco-eval-max-pixels", type=int, default=None)

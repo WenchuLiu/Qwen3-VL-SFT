@@ -63,9 +63,11 @@ Training defaults are under `outputs/train/`, while standalone evaluation
 defaults are under `outputs/eval/`. Set `OUTPUT_DIR`, `WORK_ROOT`, or `EVAL_ROOT`
 to place a run on another filesystem without changing the launchers.
 
-The `train_lora_r64_4x3090.sh` preset evaluates after every epoch using
-`data/coco/val_episodes_500_124_inst-v5.json` (1,500 episodes: 500 each
-for 1/2/4-shot evaluation). `DATA_ROOT` should point to a directory containing
+The `train_lora_r64_4x3090.sh` preset evaluates after every epoch using the
+fixed 0-shot and 1/2/4-shot manifests (2,000 episodes: 500 for each shot).
+Each shot is evaluated in 0/1/2/4 order and sharded across all DDP ranks;
+rank zero prints the combined F1 and mAP metrics without writing a separate
+evaluation-result directory. `DATA_ROOT` should point to a directory containing
 the local COCO images, normally `COCO/train2017`, `COCO/val2017`, and
 `COCO/annotations`; stale absolute paths in manifests are relocated under this
 root automatically. The launcher writes terminal output to

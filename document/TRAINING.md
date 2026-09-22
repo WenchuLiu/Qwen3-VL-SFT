@@ -104,12 +104,14 @@ continue an interrupted run, set both `OUTPUT_DIR` and `RESUME_FROM_CHECKPOINT`.
 Logging defaults to `REPORT_TO=none`; use `REPORT_TO=swanlab` with the SDK's
 normal authentication and `SWANLAB_PROJ_NAME` for its project name.
 
-Evaluate saved adapters on fixed held-out episodes to select the checkpoint.
-Online generation evaluation currently runs only on rank zero while other ranks
-wait; large evaluation manifests can exceed the distributed timeout. It is
-disabled in this preset. The script permits other model paths, but the 8B model
-needs its own memory measurement before reusing these settings. This preset is
-for image SFT, not a tested video-training configuration.
+The preset evaluates fixed held-out episodes after every epoch. It runs
+0/1/2/4-shot tasks in order and shards each task across all DDP ranks using the
+same strided split as the standalone few-shot evaluator. Rank zero restores the
+original episode order, computes F1 and mAP, and prints the metrics to the
+training log; online evaluation does not create a separate result directory.
+The script permits other model paths, but the 8B model needs its own memory
+measurement before reusing these settings. This preset is for image SFT, not a
+tested video-training configuration.
 
 ## Score-aware GRPO
 

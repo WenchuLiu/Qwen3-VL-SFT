@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import subprocess
@@ -14,8 +13,8 @@ from transformers import Trainer
 from transformers.trainer_callback import PrinterCallback, ProgressCallback, TrainerCallback
 from transformers.trainer_utils import speed_metrics
 
-from ..evaluation.coco.generation import evaluate_loaded_model, load_episodes, result_payload
-from ..evaluation.coco.metrics import trainer_metrics
+from ..evaluation.coco.generation import generate_responses, load_episodes
+from ..evaluation.coco.metrics import evaluate_episode_predictions, trainer_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +26,36 @@ SWANLAB_EVAL_KEYS = tuple(
     for metric in ("f1", "map")
 )
 SWANLAB_KEYS = frozenset((*SWANLAB_TRAIN_KEYS, *SWANLAB_EVAL_KEYS))
+
+
+def _merge_ranked_responses(payloads: list[dict], total: int) -> list[str]:
+    """Restore strided per-rank generation responses to manifest order."""
+    world_size = len(payloads)
+    combined: list[str | None] = [None] * total
+    seen_ranks: set[int] = set()
+    errors: list[str] = []
+    for payload in payloads:
+        rank = int(payload["rank"])
+        if rank < 0 or rank >= world_size or rank in seen_ranks:
+            raise RuntimeError(f"invalid or duplicate generation-eval rank: {rank}")
+        seen_ranks.add(rank)
+        if payload.get("error"):
+            errors.append(f"rank {rank}: {payload['error']}")
+            continue
+        responses = list(payload.get("responses") or [])
+        indices = list(range(rank, total, world_size))
+        if len(responses) != len(indices):
+            raise RuntimeError(
+                f"rank {rank} returned {len(responses)} responses for "
+                f"{len(indices)} evaluation records"
+            )
+        for index, response in zip(indices, responses):
+            combined[index] = response
+    if errors:
+        raise RuntimeError("; ".join(errors))
+    if seen_ranks != set(range(world_size)) or any(value is None for value in combined):
+        raise RuntimeError("generation evaluation returned incomplete rank responses")
+    return [str(value) for value in combined]
 
 
 def _swanlab_metrics(logs: dict) -> dict[str, float]:
@@ -61,12 +90,27 @@ def _report_includes_swanlab(report_to) -> bool:
     return any(str(item).lower() == "swanlab" for item in (values or []))
 
 
-def format_iter_epoch(global_step: int, epoch: float | None, total_epochs: float) -> str:
-    """Return the MMDetection-style global-iteration/epoch display."""
+def _epoch_index(epoch: float | None, total_epochs: float) -> int:
+    """Return the active epoch, keeping an exact boundary on the completed epoch."""
     epoch_total = max(1, math.ceil(total_epochs))
-    completed_epochs = math.floor(epoch or 0.0)
-    epoch_index = min(epoch_total, max(1, completed_epochs + 1))
-    return f"{global_step}[{epoch_index}/{epoch_total}]"
+    epoch_value = max(float(epoch or 0.0), 0.0)
+    rounded_epoch = round(epoch_value)
+    if epoch_value > 0 and math.isclose(
+        epoch_value,
+        rounded_epoch,
+        rel_tol=0.0,
+        abs_tol=1e-9,
+    ):
+        epoch_index = rounded_epoch
+    else:
+        epoch_index = math.ceil(epoch_value)
+    return min(epoch_total, max(1, epoch_index))
+
+
+def format_iter_epoch(global_step: int, epoch: float | None, total_epochs: float) -> str:
+    """Return the optimizer-update/epoch display without crossing boundaries early."""
+    epoch_total = max(1, math.ceil(total_epochs))
+    return f"{global_step}[{_epoch_index(epoch, total_epochs)}/{epoch_total}]"
 
 
 def _nvidia_smi_metrics() -> dict[str, float]:
@@ -111,14 +155,23 @@ class TrainingTelemetryCallback(TrainerCallback):
         self.started_at: float | None = None
         self.last_log_at: float | None = None
         self.last_log_step = 0
+        self.micro_batches_per_epoch: int | None = None
         self.swanlab_enabled = swanlab_enabled
 
     def on_train_begin(self, args, state, control, **kwargs):
-        del args, kwargs
+        del args
         now = time.monotonic()
         self.started_at = now
         self.last_log_at = now
         self.last_log_step = state.global_step
+        train_dataloader = kwargs.get("train_dataloader")
+        try:
+            micro_batches_per_epoch = len(train_dataloader)
+        except (TypeError, AttributeError):
+            micro_batches_per_epoch = 0
+        self.micro_batches_per_epoch = (
+            int(micro_batches_per_epoch) if micro_batches_per_epoch > 0 else None
+        )
         return control
 
     def on_log(self, args, state, control, logs=None, **kwargs):
@@ -158,20 +211,32 @@ class TrainingTelemetryCallback(TrainerCallback):
         eta_seconds = seconds_per_step * remaining_steps
         total_epochs = float(args.num_train_epochs)
         epoch_label = format_iter_epoch(state.global_step, state.epoch, total_epochs)
-        steps_per_epoch = max(1, math.ceil(total_steps / max(1, math.ceil(total_epochs))))
-        epoch_number = min(
-            max(1, math.floor(state.epoch or 0.0) + 1),
-            max(1, math.ceil(total_epochs)),
-        )
-        iter_in_epoch = state.global_step - (epoch_number - 1) * steps_per_epoch
-        iter_in_epoch = min(max(iter_in_epoch, 1), steps_per_epoch)
+        if self.micro_batches_per_epoch is not None:
+            steps_per_epoch = max(
+                1,
+                math.ceil(
+                    self.micro_batches_per_epoch
+                    / max(1, int(args.gradient_accumulation_steps))
+                ),
+            )
+        else:
+            steps_per_epoch = max(
+                1,
+                math.ceil(total_steps / max(1, math.ceil(total_epochs))),
+            )
+        epoch_number = _epoch_index(state.epoch, total_epochs)
+        update_in_epoch = state.global_step - (epoch_number - 1) * steps_per_epoch
+        update_in_epoch = min(max(update_in_epoch, 1), steps_per_epoch)
         telemetry: dict[str, float | str] = {
             "progress/iter": float(state.global_step),
+            "progress/optimizer_step": float(state.global_step),
             "progress/max_iters": float(total_steps),
             "progress/fraction": state.global_step / total_steps,
             "progress/epoch": float(epoch_number),
-            "progress/iter_in_epoch": float(iter_in_epoch),
+            "progress/iter_in_epoch": float(update_in_epoch),
             "progress/iters_per_epoch": float(steps_per_epoch),
+            "progress/optimizer_update_in_epoch": float(update_in_epoch),
+            "progress/optimizer_updates_per_epoch": float(steps_per_epoch),
             "throughput/seconds_per_step": seconds_per_step,
             "throughput/steps_per_second": steps_per_second,
             "throughput/samples_per_second": effective_batch_size * steps_per_second,
@@ -180,6 +245,19 @@ class TrainingTelemetryCallback(TrainerCallback):
             "throughput/elapsed_hours": total_elapsed / 3600.0,
             "throughput/eta_hours": eta_seconds / 3600.0,
         }
+        micro_batch_progress = "n/a"
+        if self.micro_batches_per_epoch is not None:
+            micro_batch_in_epoch = min(
+                update_in_epoch * max(1, int(args.gradient_accumulation_steps)),
+                self.micro_batches_per_epoch,
+            )
+            telemetry["progress/micro_batch_in_epoch"] = float(micro_batch_in_epoch)
+            telemetry["progress/micro_batches_per_epoch"] = float(
+                self.micro_batches_per_epoch
+            )
+            micro_batch_progress = (
+                f"{micro_batch_in_epoch}/{self.micro_batches_per_epoch}"
+            )
         if "loss" in logs:
             telemetry["stability/loss_is_finite"] = float(math.isfinite(float(logs["loss"])))
         if "grad_norm" in logs:
@@ -212,11 +290,12 @@ class TrainingTelemetryCallback(TrainerCallback):
             )
         logger.debug("Training telemetry: %s", telemetry)
         logger.info(
-            "Iter %s | epoch_iter=%d/%d | loss=%s | lr=%s | "
+            "Optimizer step %s | epoch_update=%d/%d | micro_batch=%s | loss=%s | lr=%s | "
             "time=%.3fs | samples/s=%.2f | eta=%.2fh",
             epoch_label,
-            iter_in_epoch,
+            update_in_epoch,
             steps_per_epoch,
+            micro_batch_progress,
             f"{float(logs['loss']):.4f}" if "loss" in logs else "n/a",
             f"{float(logs['learning_rate']):.3e}" if "learning_rate" in logs else "n/a",
             seconds_per_step,
@@ -274,29 +353,51 @@ class GenerationEvalTrainer(TrainingTelemetryTrainer):
     def __init__(
         self,
         *args,
-        generation_eval_episodes: str,
+        generation_eval_episodes: list[str] | str,
         generation_eval_processor,
         generation_eval_batch_size: int,
         generation_eval_min_pixels: int,
         generation_eval_max_pixels: int,
         generation_eval_max_new_tokens: int,
-        generation_eval_model_path: str,
         generation_eval_media_root: str | Path | None = None,
         generation_eval_visual_enhancement: bool = False,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
-        self.generation_eval_episodes = str(Path(generation_eval_episodes).resolve())
-        self.generation_eval_metadata, self.generation_eval_records = load_episodes(
-            self.generation_eval_episodes,
-            media_root=generation_eval_media_root,
+        episode_paths = (
+            [generation_eval_episodes]
+            if isinstance(generation_eval_episodes, str)
+            else list(generation_eval_episodes)
         )
+        tasks_by_shot: dict[int, dict] = {}
+        for episode_path in episode_paths:
+            resolved_path = str(Path(episode_path).resolve())
+            metadata, records = load_episodes(
+                resolved_path,
+                media_root=generation_eval_media_root,
+            )
+            records_by_shot: dict[int, list[dict]] = {}
+            for record in records:
+                shot = int(record["num_shots"])
+                records_by_shot.setdefault(shot, []).append(record)
+            for shot, shot_records in records_by_shot.items():
+                if shot in tasks_by_shot:
+                    raise ValueError(
+                        f"generation evaluation shot {shot} appears in multiple manifests"
+                    )
+                tasks_by_shot[shot] = {
+                    "shot": shot,
+                    "records": shot_records,
+                    "metadata": metadata,
+                }
+        self.generation_eval_tasks = [
+            tasks_by_shot[shot] for shot in sorted(tasks_by_shot)
+        ]
         self.generation_eval_processor = generation_eval_processor
         self.generation_eval_batch_size = generation_eval_batch_size
         self.generation_eval_min_pixels = generation_eval_min_pixels
         self.generation_eval_max_pixels = generation_eval_max_pixels
         self.generation_eval_max_new_tokens = generation_eval_max_new_tokens
-        self.generation_eval_model_path = generation_eval_model_path
         self.generation_eval_visual_enhancement = generation_eval_visual_enhancement
 
     @staticmethod
@@ -305,21 +406,35 @@ class GenerationEvalTrainer(TrainingTelemetryTrainer):
 
     def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval"):
         del eval_dataset, ignore_keys, metric_key_prefix
-        if self._distributed():
+        distributed = self._distributed()
+        if distributed:
             torch.distributed.barrier()
-        rank_zero = not self._distributed() or torch.distributed.get_rank() == 0
-        payload = {"metrics": None, "result": None, "error": None}
-        if rank_zero:
-            try:
-                model = self.accelerator.unwrap_model(self.model)
-                device = next(model.parameters()).device
-                original_cache = getattr(model.config, "use_cache", None)
-                if original_cache is not None:
-                    model.config.use_cache = True
-                started = time.monotonic()
+        rank = torch.distributed.get_rank() if distributed else 0
+        world_size = torch.distributed.get_world_size() if distributed else 1
+        rank_zero = rank == 0
+        model = self.accelerator.unwrap_model(self.model)
+        device = next(model.parameters()).device
+        original_cache = getattr(model.config, "use_cache", None)
+        if original_cache is not None:
+            model.config.use_cache = True
+        combined_metrics: dict[str, float] = {}
+        try:
+            for task in self.generation_eval_tasks:
+                shot = task["shot"]
+                records = task["records"]
+                if rank_zero:
+                    logger.info(
+                        "Starting %d-shot generation eval @ step %d | episodes=%d | ranks=%d",
+                        shot,
+                        self.state.global_step,
+                        len(records),
+                        world_size,
+                    )
+                local_records = records[rank::world_size]
+                local_payload = {"rank": rank, "responses": None, "error": None}
                 try:
-                    result = evaluate_loaded_model(
-                        self.generation_eval_records,
+                    local_payload["responses"] = generate_responses(
+                        local_records,
                         model,
                         self.generation_eval_processor,
                         device,
@@ -328,58 +443,56 @@ class GenerationEvalTrainer(TrainingTelemetryTrainer):
                         max_pixels=self.generation_eval_max_pixels,
                         max_new_tokens=self.generation_eval_max_new_tokens,
                         visual_enhancement=self.generation_eval_visual_enhancement,
-                        coco_annotations_path=self.generation_eval_metadata.get(
-                            "query_annotations"
-                        ),
                     )
-                finally:
-                    if original_cache is not None:
-                        model.config.use_cache = original_cache
-                payload["metrics"] = trainer_metrics(result)
-                payload["result"] = result_payload(
-                    result,
-                    model_path=self.generation_eval_model_path,
-                    adapter_path=None,
-                    episodes_path=self.generation_eval_episodes,
-                    device=str(device),
-                    batch_size=self.generation_eval_batch_size,
-                    min_pixels=self.generation_eval_min_pixels,
-                    max_pixels=self.generation_eval_max_pixels,
-                    max_new_tokens=self.generation_eval_max_new_tokens,
-                    visual_enhancement=self.generation_eval_visual_enhancement,
-                    coco_annotations_path=self.generation_eval_metadata.get(
-                        "query_annotations"
-                    ),
-                    runtime_seconds=time.monotonic() - started,
-                )
-                output_dir = Path(self.args.output_dir) / "generation_eval"
-                output_dir.mkdir(parents=True, exist_ok=True)
-                output_path = output_dir / f"step-{self.state.global_step}.json"
-                output_path.write_text(
-                    json.dumps(payload["result"], ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-            except Exception as error:
-                payload["error"] = repr(error)
-        if self._distributed():
-            # Only scalar metrics and the error cross process boundaries. The
-            # full prediction audit is already persisted by rank zero and can
-            # be large for a 500-image manifest.
-            values = [
-                {
-                    "metrics": payload["metrics"],
-                    "error": payload["error"],
-                }
-                if rank_zero
-                else None
-            ]
-            torch.distributed.broadcast_object_list(values, src=0)
-            payload = values[0]
-            torch.distributed.barrier()
-        if payload["error"]:
-            raise RuntimeError(f"generation evaluation failed: {payload['error']}")
-        self.log(payload["metrics"])
+                except Exception as error:
+                    local_payload["error"] = repr(error)
+
+                if distributed:
+                    gathered_payloads = [None] * world_size
+                    torch.distributed.all_gather_object(gathered_payloads, local_payload)
+                else:
+                    gathered_payloads = [local_payload]
+
+                task_payload = None
+                if rank_zero:
+                    try:
+                        responses = _merge_ranked_responses(
+                            gathered_payloads,
+                            len(records),
+                        )
+                        result = evaluate_episode_predictions(
+                            records,
+                            responses,
+                            coco_annotations_path=task["metadata"].get(
+                                "query_annotations"
+                            ),
+                        )
+                        task_payload = {
+                            "metrics": trainer_metrics(result),
+                            "error": None,
+                        }
+                    except Exception as error:
+                        task_payload = {"metrics": None, "error": repr(error)}
+                if distributed:
+                    values = [task_payload if rank_zero else None]
+                    torch.distributed.broadcast_object_list(values, src=0)
+                    task_payload = values[0]
+                if task_payload["error"]:
+                    raise RuntimeError(
+                        f"{shot}-shot generation evaluation failed: "
+                        f"{task_payload['error']}"
+                    )
+                shot_metrics = task_payload["metrics"]
+                combined_metrics.update(shot_metrics)
+                self.log(shot_metrics)
+        finally:
+            if original_cache is not None:
+                model.config.use_cache = original_cache
+
         self.control = self.callback_handler.on_evaluate(
-            self.args, self.state, self.control, payload["metrics"]
+            self.args,
+            self.state,
+            self.control,
+            combined_metrics,
         )
-        return payload["metrics"]
+        return combined_metrics

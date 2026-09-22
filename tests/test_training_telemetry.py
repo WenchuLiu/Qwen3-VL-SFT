@@ -47,10 +47,10 @@ def _load_trainer_without_optional_training_dependencies():
     trainer_utils.speed_metrics = lambda *args, **kwargs: {}
 
     generation = types.ModuleType("qwen3vl_sft.evaluation.coco.generation")
-    generation.evaluate_loaded_model = None
+    generation.generate_responses = None
     generation.load_episodes = None
-    generation.result_payload = None
     metrics = types.ModuleType("qwen3vl_sft.evaluation.coco.metrics")
+    metrics.evaluate_episode_predictions = None
     metrics.trainer_metrics = None
 
     fake_modules = {
@@ -67,6 +67,181 @@ def _load_trainer_without_optional_training_dependencies():
 
 
 class TrainingTelemetryTest(unittest.TestCase):
+    def test_rank_responses_are_restored_to_manifest_order(self):
+        trainer = _load_trainer_without_optional_training_dependencies()
+        merge = getattr(trainer, "_merge_ranked_responses", lambda *_: None)
+
+        responses = merge(
+            [
+                {"rank": 0, "responses": ["response-0", "response-4"], "error": None},
+                {"rank": 1, "responses": ["response-1", "response-5"], "error": None},
+                {"rank": 2, "responses": ["response-2", "response-6"], "error": None},
+                {"rank": 3, "responses": ["response-3", "response-7"], "error": None},
+            ],
+            8,
+        )
+
+        self.assertEqual(responses, [f"response-{index}" for index in range(8)])
+
+    def test_generation_eval_runs_each_shot_in_order_without_writing_results(self):
+        trainer = _load_trainer_without_optional_training_dependencies()
+        generated_shots = []
+        logged_metrics = []
+
+        class Model:
+            config = types.SimpleNamespace(use_cache=False)
+
+            @staticmethod
+            def parameters():
+                return iter([types.SimpleNamespace(device="cuda:0")])
+
+        def generate(records, *args, **kwargs):
+            del args, kwargs
+            shot = records[0]["num_shots"]
+            generated_shots.append(shot)
+            return [f"{shot}-shot-response-{index}" for index in range(len(records))]
+
+        def evaluate_predictions(records, responses, **kwargs):
+            del responses, kwargs
+            return {"shot": records[0]["num_shots"]}
+
+        def flatten_metrics(result):
+            shot = result["shot"]
+            return {
+                f"eval_coco_{shot}shot_f1": shot + 0.25,
+                f"eval_coco_{shot}shot_map": shot + 0.125,
+            }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evaluator = object.__new__(trainer.GenerationEvalTrainer)
+            evaluator.accelerator = types.SimpleNamespace(unwrap_model=lambda model: model)
+            evaluator.model = Model()
+            evaluator.args = types.SimpleNamespace(output_dir=str(root))
+            evaluator.state = types.SimpleNamespace(global_step=370)
+            evaluator.control = None
+            evaluator.callback_handler = types.SimpleNamespace(
+                on_evaluate=lambda args, state, control, metrics: control
+            )
+            evaluator.log = lambda values: logged_metrics.append(values)
+            evaluator.generation_eval_tasks = [
+                {
+                    "shot": 0,
+                    "records": [{"num_shots": 0}, {"num_shots": 0}],
+                    "metadata": {},
+                },
+                {
+                    "shot": 1,
+                    "records": [{"num_shots": 1}, {"num_shots": 1}],
+                    "metadata": {},
+                },
+            ]
+            evaluator.generation_eval_processor = object()
+            evaluator.generation_eval_batch_size = 1
+            evaluator.generation_eval_min_pixels = 4096
+            evaluator.generation_eval_max_pixels = 640000
+            evaluator.generation_eval_max_new_tokens = 1024
+            evaluator.generation_eval_visual_enhancement = False
+
+            with (
+                patch.object(
+                    trainer,
+                    "generate_responses",
+                    side_effect=generate,
+                    create=True,
+                ),
+                patch.object(
+                    trainer,
+                    "evaluate_episode_predictions",
+                    side_effect=evaluate_predictions,
+                    create=True,
+                ),
+                patch.object(trainer, "trainer_metrics", side_effect=flatten_metrics),
+            ):
+                metrics = evaluator.evaluate()
+
+            self.assertEqual(generated_shots, [0, 1])
+            self.assertEqual(
+                logged_metrics,
+                [
+                    {"eval_coco_0shot_f1": 0.25, "eval_coco_0shot_map": 0.125},
+                    {"eval_coco_1shot_f1": 1.25, "eval_coco_1shot_map": 1.125},
+                ],
+            )
+            self.assertEqual(
+                metrics,
+                {
+                    "eval_coco_0shot_f1": 0.25,
+                    "eval_coco_0shot_map": 0.125,
+                    "eval_coco_1shot_f1": 1.25,
+                    "eval_coco_1shot_map": 1.125,
+                },
+            )
+            self.assertFalse((root / "generation_eval").exists())
+
+    def test_epoch_boundary_stays_on_the_epoch_that_just_finished(self):
+        trainer = _load_trainer_without_optional_training_dependencies()
+
+        label = trainer.format_iter_epoch(
+            global_step=370,
+            epoch=1.0,
+            total_epochs=4.0,
+        )
+
+        self.assertEqual(label, "370[1/4]")
+
+    def test_logs_distinguish_micro_batches_from_optimizer_updates(self):
+        trainer = _load_trainer_without_optional_training_dependencies()
+        configurations = (
+            (1, 8, 2958, 80),
+            (2, 4, 1479, 40),
+        )
+
+        for batch_size, accumulation_steps, micro_batches, completed_micro_batches in configurations:
+            with self.subTest(
+                batch_size=batch_size,
+                accumulation_steps=accumulation_steps,
+            ):
+                callback = trainer.TrainingTelemetryCallback(swanlab_enabled=False)
+                args = types.SimpleNamespace(
+                    report_to=[],
+                    world_size=4,
+                    per_device_train_batch_size=batch_size,
+                    gradient_accumulation_steps=accumulation_steps,
+                    num_train_epochs=4,
+                    dataloader_num_workers=2,
+                )
+                state = types.SimpleNamespace(
+                    is_world_process_zero=True,
+                    global_step=10,
+                    max_steps=1480,
+                    epoch=10 / 370,
+                )
+                callback.on_train_begin(
+                    args,
+                    types.SimpleNamespace(global_step=0),
+                    control=None,
+                    train_dataloader=range(micro_batches),
+                )
+
+                with (
+                    patch.object(trainer, "_nvidia_smi_metrics", return_value={}),
+                    self.assertLogs(trainer.logger, level="INFO") as captured,
+                ):
+                    callback.on_log(
+                        args,
+                        state,
+                        control=None,
+                        logs={"loss": 1.0, "learning_rate": 2e-4},
+                    )
+
+                output = "\n".join(captured.output)
+                self.assertIn("epoch_update=10/370", output)
+                self.assertIn(
+                    f"micro_batch={completed_micro_batches}/{micro_batches}",
+                    output,
+                )
+
     def test_eval_only_logs_are_printed(self):
         trainer = _load_trainer_without_optional_training_dependencies()
         callback = trainer.TrainingTelemetryCallback(swanlab_enabled=False)
@@ -112,9 +287,11 @@ class TrainingTelemetryTest(unittest.TestCase):
         self.assertIn("--save-strategy epoch", command)
         self.assertIn("--save-total-limit 4", command)
         self.assertIn(
-            "--coco-eval-episodes data/coco/val_episodes_500_124_inst-v5.json",
+            "--coco-eval-episodes data/coco/val_episodes_500_0shot_inst-v5.json "
+            "data/coco/val_episodes_500_124_inst-v5.json",
             command,
         )
+        self.assertIn("--coco-eval-max-new-tokens 1024", command)
 
     def test_4x3090_launcher_requires_swanlab_key_before_starting(self):
         with tempfile.TemporaryDirectory() as directory:

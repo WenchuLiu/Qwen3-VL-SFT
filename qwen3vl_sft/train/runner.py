@@ -202,7 +202,6 @@ def train(args) -> None:
             generation_eval_min_pixels=args.coco_eval_min_pixels or args.min_pixels,
             generation_eval_max_pixels=args.coco_eval_max_pixels or args.max_pixels,
             generation_eval_max_new_tokens=args.coco_eval_max_new_tokens,
-            generation_eval_model_path=args.model_name_or_path,
             generation_eval_media_root=args.data_root,
             generation_eval_visual_enhancement=getattr(
                 args, "visual_enhancement", False

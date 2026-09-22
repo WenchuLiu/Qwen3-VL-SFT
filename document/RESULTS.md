@@ -1,8 +1,9 @@
 # Results and Artifacts
 
 Training writes the final model/adapter, processor files, Trainer state, and
-`run_args.json` under `--output-dir`. Generation validation additionally
-writes `generation_eval/step-*.json`.
+`run_args.json` under `--output-dir`. Online generation validation reports F1,
+mAP, and related metrics in the terminal, `train.log`, and SwanLab without
+writing a separate result directory.
 
 Standalone COCO evaluation writes one result JSON containing:
 
