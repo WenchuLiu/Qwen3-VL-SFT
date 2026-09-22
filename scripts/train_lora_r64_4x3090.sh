@@ -13,6 +13,21 @@ MIN_PIXELS="${MIN_PIXELS:-4096}"
 MAX_PIXELS="${MAX_PIXELS:-640000}"
 RUN_ID="${RUN_ID:-qwen3vl-4b-r64-4x3090-$(date +%Y%m%d-%H%M%S)}"
 OUTPUT_DIR="${OUTPUT_DIR:-outputs/train/sft/${RUN_ID}}"
+REPORT_TO="${REPORT_TO:-swanlab}"
+SWANLAB_PROJECT="${SWANLAB_PROJECT:-qwen3vl-coco-sft}"
+SWANLAB_PROJ_NAME="${SWANLAB_PROJ_NAME:-${SWANLAB_PROJECT}}"
+SWANLAB_LOG_DIR="${SWANLAB_LOG_DIR:-${OUTPUT_DIR}/swanlog}"
+SWANLAB_MODE="${SWANLAB_MODE:-cloud}"
+
+if [[ "${DRY_RUN:-0}" != "1" && "${REPORT_TO,,}" == *swanlab* && -z "${SWANLAB_API_KEY:-}" ]]; then
+  echo "SWANLAB_API_KEY must be set when REPORT_TO includes swanlab" >&2
+  exit 1
+fi
+
+# SwanLab >=0.10 parses SWANLAB_PROJECT as a structured setting. Keep the
+# scalar compatibility variable consumed by the training runner instead.
+unset SWANLAB_PROJECT
+export SWANLAB_PROJ_NAME SWANLAB_LOG_DIR SWANLAB_MODE
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
@@ -25,7 +40,7 @@ ARGS=(
   --data-root "${DATA_ROOT}"
   --output-dir "${OUTPUT_DIR}"
   --run-name "${RUN_NAME:-$(basename "${OUTPUT_DIR}")}"
-  --report-to "${REPORT_TO:-none}"
+  --report-to "${REPORT_TO}"
   --lora-enable true
   --lora-r 64
   --lora-alpha 128
@@ -39,7 +54,7 @@ ARGS=(
   --per-device-train-batch-size "${PER_DEVICE_TRAIN_BATCH_SIZE:-2}"
   --gradient-accumulation-steps "${GRADIENT_ACCUMULATION_STEPS:-2}"
   --learning-rate "${LEARNING_RATE:-5e-5}"
-  --num-train-epochs "${NUM_TRAIN_EPOCHS:-3}"
+  --num-train-epochs "${NUM_TRAIN_EPOCHS:-4}"
   --max-steps "${MAX_STEPS:--1}"
   --warmup-ratio "${WARMUP_RATIO:-0.03}"
   --lr-scheduler-type cosine
@@ -57,9 +72,9 @@ ARGS=(
   --coco-eval-max-pixels "${COCO_EVAL_MAX_PIXELS:-${MAX_PIXELS}}"
   --coco-eval-max-new-tokens "${COCO_EVAL_MAX_NEW_TOKENS:-1024}"
   --per-device-eval-batch-size 1
-  --save-strategy "${SAVE_STRATEGY:-steps}"
+  --save-strategy "${SAVE_STRATEGY:-epoch}"
   --save-steps "${SAVE_STEPS:-200}"
-  --save-total-limit "${SAVE_TOTAL_LIMIT:-3}"
+  --save-total-limit "${SAVE_TOTAL_LIMIT:-4}"
   --logging-steps "${LOGGING_STEPS:-10}"
   --resume-training false
   --seed "${SEED:-42}"

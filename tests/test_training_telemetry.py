@@ -91,8 +91,10 @@ class TrainingTelemetryTest(unittest.TestCase):
                 "DRY_RUN": "1",
                 "DATASET": "data/coco/train_sft_10pct_1to2to4_11829_inst-v5.json",
                 "RUN_ID": "telemetry-test",
+                "SWANLAB_API_KEY": "test-key",
             }
         )
+        environment.pop("REPORT_TO", None)
         result = subprocess.run(
             ["bash", "scripts/train_lora_r64_4x3090.sh"],
             cwd=ROOT,
@@ -103,12 +105,42 @@ class TrainingTelemetryTest(unittest.TestCase):
         )
 
         command = result.stdout
+        self.assertIn("--report-to swanlab", command)
         self.assertIn("--eval-mode generation", command)
         self.assertIn("--eval-strategy epoch", command)
+        self.assertIn("--num-train-epochs 4", command)
+        self.assertIn("--save-strategy epoch", command)
+        self.assertIn("--save-total-limit 4", command)
         self.assertIn(
             "--coco-eval-episodes data/coco/val_episodes_500_124_inst-v5.json",
             command,
         )
+
+    def test_4x3090_launcher_requires_swanlab_key_before_starting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory) / "run"
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "OUTPUT_DIR": str(output_dir),
+                    "PYTHON_BIN": "true",
+                    "REPORT_TO": "swanlab",
+                }
+            )
+            environment.pop("SWANLAB_API_KEY", None)
+
+            result = subprocess.run(
+                ["bash", "scripts/train_lora_r64_4x3090.sh"],
+                cwd=ROOT,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("SWANLAB_API_KEY must be set", result.stderr)
+            self.assertFalse(output_dir.exists())
 
     def test_4x3090_launcher_writes_a_training_log(self):
         with tempfile.TemporaryDirectory() as directory:

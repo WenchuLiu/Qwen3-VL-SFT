@@ -70,6 +70,14 @@ the local COCO images, normally `COCO/train2017`, `COCO/val2017`, and
 `COCO/annotations`; stale absolute paths in manifests are relocated under this
 root automatically. The launcher writes terminal output to
 `${OUTPUT_DIR}/train.log` by default; set `LOG_FILE` to override it.
+The default training schedule is 4 epochs and checkpoints are saved at each
+epoch, retaining all four epoch checkpoints by default.
+SwanLab reporting is enabled by default for this preset; export
+`SWANLAB_API_KEY` before a real run, or set `REPORT_TO=none` to disable it.
+The default project is `qwen3vl-coco-sft`, and training metrics are uploaded
+according to `LOGGING_STEPS` (10 optimizer steps by default), while each
+epoch's COCO metrics are uploaded after evaluation. `DRY_RUN=1` can inspect
+the resolved command without a SwanLab key.
 Override `EVAL_EPISODES` to use another manifest, or pass
 `--eval-mode none --eval-strategy no` to disable in-training evaluation.
 
