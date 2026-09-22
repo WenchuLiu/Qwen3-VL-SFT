@@ -52,6 +52,65 @@ LoRA is the default. Disable it with `--lora-enable false` and explicitly
 select the modules to tune with `--tune-mm-vision`, `--tune-mm-mlp`, and
 `--tune-mm-llm`.
 
+## Four RTX 3090 GPUs: r64 LoRA SFT
+
+`scripts/train_lora_r64_4x3090.sh` is a single-node DDP preset for the local
+Qwen3-VL-4B-Instruct checkpoint. It uses BF16, SDPA, non-reentrant gradient
+checkpointing, rank 64 / alpha 128, and the existing attention-only LoRA
+targets. The effective batch is 4 GPUs x 2 samples x 2 accumulation steps = 16.
+Learning rate is 5e-5 with 3% warmup and cosine decay; the initial run is three
+epochs. These are starting settings, not measured optimums or a memory guarantee.
+
+Activate the CUDA training environment first, then run from the repository:
+
+```bash
+DATASET=data/coco/train_sft_10pct_1to4_11829.json \
+DRY_RUN=1 bash scripts/train_lora_r64_4x3090.sh
+
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+DATASET=data/coco/train_sft_10pct_1to4_11829.json \
+bash scripts/train_lora_r64_4x3090.sh
+```
+
+`DRY_RUN=1` only prints the command. Actual launch checks that four CUDA GPUs
+are visible. Use `PYTHON_BIN` to select an interpreter. Paths are relative to
+the repository root; `DATA_ROOT` defaults to that root because the local COCO
+manifests contain paths such as `data/COCO/train2017/...`. Override `DATA_ROOT`
+for datasets using another convention.
+
+The preset preserves the other experiments' 800 x 800 pixel budget: each image
+is limited to 640000 pixels (approximately 625 visual tokens
+with Qwen3-VL's 16-pixel patches and 2x spatial merge) and each full conversation
+to 4096 tokens. Multiple support images count separately. Long answers or many
+shots can still exceed the sequence budget: the collator raises an error rather
+than truncating vision tokens or silently dropping supervision. Inspect your
+dataset lengths before a long run. Keep this pixel budget unchanged for
+comparability with the other experiments; handle memory pressure through batch
+size, checkpointing, or model/runtime memory optimizations instead.
+Four DDP workers each hold a complete model; their VRAM is not pooled.
+
+Environment variables override the preset values shown in the script. Additional
+CLI arguments are forwarded, so a short training check is:
+
+```bash
+DATASET=data/coco/train_sft_10pct_1to4_11829.json \
+bash scripts/train_lora_r64_4x3090.sh \
+  --max-steps 5 --logging-steps 1 --save-strategy no
+```
+
+Training still saves the final adapter and processor with `--save-strategy no`.
+Runs get a timestamped output directory and do not automatically resume. To
+continue an interrupted run, set both `OUTPUT_DIR` and `RESUME_FROM_CHECKPOINT`.
+Logging defaults to `REPORT_TO=none`; use `REPORT_TO=swanlab` with the SDK's
+normal authentication and `SWANLAB_PROJ_NAME` for its project name.
+
+Evaluate saved adapters on fixed held-out episodes to select the checkpoint.
+Online generation evaluation currently runs only on rank zero while other ranks
+wait; large evaluation manifests can exceed the distributed timeout. It is
+disabled in this preset. The script permits other model paths, but the 8B model
+needs its own memory measurement before reusing these settings. This preset is
+for image SFT, not a tested video-training configuration.
+
 ## Score-aware GRPO
 
 Use the standalone GRPO entry point for reinforcement learning:
