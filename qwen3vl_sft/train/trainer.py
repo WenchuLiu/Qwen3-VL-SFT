@@ -17,7 +17,6 @@ from transformers.trainer_utils import speed_metrics
 from ..evaluation.coco.generation import evaluate_loaded_model, load_episodes, result_payload
 from ..evaluation.coco.metrics import trainer_metrics
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -41,6 +40,20 @@ def _swanlab_metrics(logs: dict) -> dict[str, float]:
         except (TypeError, ValueError):
             continue
     return metrics
+
+
+def _format_eval_metrics(logs: dict) -> str:
+    """Format evaluation metrics for the rank-zero terminal log."""
+    formatted: list[str] = []
+    for key in sorted(logs):
+        if not key.startswith("eval_"):
+            continue
+        try:
+            value = f"{float(logs[key]):.4f}"
+        except (TypeError, ValueError):
+            value = str(logs[key])
+        formatted.append(f"{key}={value}")
+    return " | ".join(formatted)
 
 
 def _report_includes_swanlab(report_to) -> bool:
@@ -119,6 +132,9 @@ class TrainingTelemetryCallback(TrainerCallback):
             else _report_includes_swanlab(getattr(args, "report_to", []))
         )
         if not any(key in logs for key in SWANLAB_TRAIN_KEYS):
+            eval_metrics = _format_eval_metrics(logs)
+            if eval_metrics:
+                logger.info("Eval @ step %d | %s", state.global_step, eval_metrics)
             if swanlab_enabled and selected_metrics:
                 self._log_swanlab(selected_metrics, state.global_step)
             return control

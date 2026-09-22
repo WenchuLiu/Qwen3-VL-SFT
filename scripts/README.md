@@ -7,6 +7,7 @@ from its own location and uses repository-relative defaults.
 | Script | Role |
 | --- | --- |
 | `train_lora.sh` | supervised LoRA/full-parameter training |
+| `train_lora_r64_4x3090.sh` | four-GPU r=64 LoRA SFT with per-epoch COCO evaluation |
 | `train_grpo.sh` | score-aware multimodal GRPO |
 | `build_coco_train.sh` | build COCO SFT records |
 | `build_coco_eval.sh` | build a fixed COCO episode manifest |
@@ -61,6 +62,12 @@ bash scripts/evaluate_fewshot.sh
 Training defaults are under `outputs/train/`, while standalone evaluation
 defaults are under `outputs/eval/`. Set `OUTPUT_DIR`, `WORK_ROOT`, or `EVAL_ROOT`
 to place a run on another filesystem without changing the launchers.
+
+The `train_lora_r64_4x3090.sh` preset evaluates after every epoch using
+`data/coco/coco/val_episodes_500_124_inst-v5.json` (1,500 episodes: 500 each
+for 1/2/4-shot evaluation).
+Override `EVAL_EPISODES` to use another manifest, or pass
+`--eval-mode none --eval-strategy no` to disable in-training evaluation.
 
 The `shell/` directory and `scripts/cross_domain_datasets/` are retained as
 compatibility paths. They should delegate to these scripts rather than gain new

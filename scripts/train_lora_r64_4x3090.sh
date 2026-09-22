@@ -8,6 +8,9 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-weights/Qwen3-VL-4B-Instruct}"
 DATASET="${DATASET:-data/coco/train_sft_10pct_1to2to4_11829_inst-v5.json}"
 DATA_ROOT="${DATA_ROOT:-data}"
+EVAL_EPISODES="${EVAL_EPISODES:-data/coco/coco/val_episodes_500_124_inst-v5.json}"
+MIN_PIXELS="${MIN_PIXELS:-4096}"
+MAX_PIXELS="${MAX_PIXELS:-640000}"
 RUN_ID="${RUN_ID:-qwen3vl-4b-r64-4x3090-$(date +%Y%m%d-%H%M%S)}"
 OUTPUT_DIR="${OUTPUT_DIR:-outputs/train/sft/${RUN_ID}}"
 
@@ -43,11 +46,16 @@ ARGS=(
   --weight-decay "${WEIGHT_DECAY:-0.0}"
   --max-grad-norm 1.0
   --model-max-length "${MODEL_MAX_LENGTH:-4096}"
-  --min-pixels "${MIN_PIXELS:-4096}"
-  --max-pixels "${MAX_PIXELS:-640000}"
+  --min-pixels "${MIN_PIXELS}"
+  --max-pixels "${MAX_PIXELS}"
   --dataloader-num-workers "${DATALOADER_NUM_WORKERS:-2}"
-  --eval-mode none
-  --eval-strategy no
+  --eval-mode generation
+  --eval-strategy epoch
+  --coco-eval-episodes "${EVAL_EPISODES}"
+  --coco-eval-batch-size "${COCO_EVAL_BATCH_SIZE:-1}"
+  --coco-eval-min-pixels "${COCO_EVAL_MIN_PIXELS:-${MIN_PIXELS}}"
+  --coco-eval-max-pixels "${COCO_EVAL_MAX_PIXELS:-${MAX_PIXELS}}"
+  --coco-eval-max-new-tokens "${COCO_EVAL_MAX_NEW_TOKENS:-1024}"
   --per-device-eval-batch-size 1
   --save-strategy "${SAVE_STRATEGY:-steps}"
   --save-steps "${SAVE_STEPS:-200}"
