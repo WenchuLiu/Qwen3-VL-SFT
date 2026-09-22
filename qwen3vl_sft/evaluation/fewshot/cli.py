@@ -377,29 +377,25 @@ def _build_manifest(
     detpo_descriptions: dict[str, str] | None = None,
 ) -> None:
     annotations_dir = dataset_dir / "annotations"
-    support_annotation = annotations_dir / (
-        "1_shot.json" if shot == 0 else f"{shot}_shot.json"
-    )
+    support_annotation = annotations_dir / f"{shot}_shot.json" if shot else None
     query_annotation = annotations_dir / "test.json"
     support_image_root, query_image_root = _dataset_image_roots(dataset_dir)
-    for path in (
-        support_annotation,
-        query_annotation,
-        support_image_root,
-        query_image_root,
-    ):
+    required_paths = [query_annotation, query_image_root]
+    if shot:
+        required_paths.extend([support_annotation, support_image_root])
+    for path in required_paths:
         if not path.exists():
             raise FileNotFoundError(path)
 
-    support_frames = load_coco_frames(
-        support_annotation,
-        support_image_root,
-        min_box_area_ratio=min_box_area_ratio,
-    )
     query_frames = load_coco_frames(
         query_annotation,
         query_image_root,
         min_box_area_ratio=min_box_area_ratio,
+    )
+    support_frames = (
+        load_coco_frames(support_annotation, support_image_root,
+                         min_box_area_ratio=min_box_area_ratio)
+        if shot else {category: [] for category in query_frames}
     )
     records = build_fixed_support_eval_records(
         support_frames,
@@ -417,9 +413,9 @@ def _build_manifest(
             "protocol": PROTOCOL_NAME,
             "prompt_template_version": PROMPT_TEMPLATE_VERSION,
             "dataset": dataset_name,
-            "support_annotations": str(support_annotation.resolve()),
+            "support_annotations": str(support_annotation.resolve()) if shot else None,
             "query_annotations": str(query_annotation.resolve()),
-            "support_image_root": str(support_image_root.resolve()),
+            "support_image_root": str(support_image_root.resolve()) if shot else None,
             "query_image_root": str(query_image_root.resolve()),
             "shots": [shot],
             "seed": seed,
@@ -591,7 +587,8 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "JSON mapping from category name to visual description; required with "
-            "--instruction-enhancement for local few-shot datasets."
+            "--instruction-enhancement for local few-shot datasets. Also selects "
+            "DetPO 0-shot descriptions (default: docs/cross_domain_category_descriptions.json)."
         ),
     )
     parser.add_argument(
@@ -599,7 +596,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help=(
             "Use the per-dataset, per-shot DetPO prompt files from "
-            "--detpo-prompts."
+            "--detpo-prompts for 1/2/4-shot, or --category-descriptions for 0-shot."
         ),
     )
     parser.add_argument(
@@ -640,13 +637,12 @@ def main() -> None:
             "--detpo uses the original single-image prompt and cannot be combined "
             "with --ve/--visual-enhancement"
         )
-    if args.detpo and args.category_descriptions is not None:
+    if args.detpo and args.category_descriptions is not None and 0 not in shots:
         raise ValueError(
-            "--detpo selects per-shot prompt files; do not combine it with "
-            "--category-descriptions"
+            "--category-descriptions with --detpo requires including --shots 0"
         )
-    if args.detpo and 0 in shots:
-        raise ValueError("--detpo requires shots 1, 2, or 4; no 0-shot prompt is provided")
+    if args.detpo and 0 in shots and args.category_descriptions is None:
+        args.category_descriptions = ROOT / "docs" / "cross_domain_category_descriptions.json"
     if args.instruction_enhancement and args.category_descriptions is None:
         raise ValueError(
             "--ie/--instruction-enhancement requires --category-descriptions "
@@ -660,7 +656,7 @@ def main() -> None:
         category_descriptions = load_category_descriptions(category_descriptions_path)
         category_descriptions_sha256 = file_sha256(category_descriptions_path)
     detpo_prompt_root = args.detpo_prompts.expanduser().resolve()
-    if args.detpo and not detpo_prompt_root.is_dir():
+    if args.detpo and any(shot > 0 for shot in shots) and not detpo_prompt_root.is_dir():
         raise NotADirectoryError(f"DetPO prompt root not found: {detpo_prompt_root}")
     work_dir = args.work_dir.expanduser().resolve()
     data_root = args.data_root.expanduser().resolve()
@@ -696,11 +692,10 @@ def main() -> None:
                 "max_new_tokens": max_new_tokens_by_dataset[dataset_name],
             }
             if args.detpo:
-                prompt_path = _resolve_detpo_prompt_path(
-                    detpo_prompt_root,
-                    dataset_name,
-                    dataset_dir,
-                    shot,
+                prompt_path = (
+                    category_descriptions_path if shot == 0 else _resolve_detpo_prompt_path(
+                        detpo_prompt_root, dataset_name, dataset_dir, shot,
+                    )
                 )
                 task["detpo_prompt_path"] = prompt_path
                 task["detpo_prompt_sha256"] = file_sha256(prompt_path)
@@ -785,7 +780,9 @@ def main() -> None:
         visual_enhancement=args.visual_enhancement,
         instruction_enhancement=args.instruction_enhancement,
         detpo=args.detpo,
-        category_descriptions=category_descriptions,
+        # DetPO embeds the correct description per task; a global 0-shot map
+        # would otherwise override the 1/2/4-shot descriptions in mixed runs.
+        category_descriptions=None if args.detpo else category_descriptions,
     ) as runner:
         for task in pending:
             _build_manifest(
@@ -815,9 +812,13 @@ def main() -> None:
                 instruction_enhancement=args.instruction_enhancement,
                 detpo=args.detpo,
                 category_descriptions_path=(
-                    str(category_descriptions_path) if category_descriptions_path else None
+                    str(task["detpo_prompt_path"]) if args.detpo else (
+                        str(category_descriptions_path) if category_descriptions_path else None
+                    )
                 ),
-                category_descriptions_sha256=category_descriptions_sha256,
+                category_descriptions_sha256=(
+                    task["detpo_prompt_sha256"] if args.detpo else category_descriptions_sha256
+                ),
                 detpo_prompt_path=(
                     str(task["detpo_prompt_path"])
                     if args.detpo

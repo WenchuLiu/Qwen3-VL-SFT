@@ -90,6 +90,26 @@ bash scripts/train_lora.sh
 
 ### DetPO eval
 
+DetPO 0-shot 使用 `docs/cross_domain_category_descriptions.json` 的类别描述，
+沿用 DetPO 单图检测 prompt，仅输入 query 图，不读取 support 图片或 shot 标注。
+一键评测六个 cross-domain 数据集：
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 NUM_GPUS=2 BATCH_SIZE=1 \
+MODEL_PATH=weights/Qwen3-VL-4B-Instruct DATA_ROOT=data \
+bash scripts/cross_domain_datasets/run_detpo_0shot.sh
+```
+
+默认覆盖 ArTaxOr、Clipart1k、FISH、NEU-DET、UODD、VISUALDIOR，
+每图像素上限保持 `640000`（800×800 像素预算），
+输出到 `outputs/eval/fewshot/qwen3-vl-4b-detpo-0shot/<dataset>/0shot/`。
+`episodes.json` 和 `result.json` 记录描述文件来源与 SHA256；
+设置 `SKIP_EXISTING=1` 可跳过描述哈希和评估模式等检查一致的已有结果。
+可用 `MAX_QUERY_PAIRS=2` 做六数据集小规模试跑，试跑请指定独立 `WORK_ROOT`。
+
+统一入口也支持 `DETPO=1 SHOTS="0 1 2 4" bash scripts/evaluate_fewshot.sh`：
+0-shot 使用上述公共描述文件，1/2/4-shot 仍使用各自的优化描述文件。
+
 DetPO 会按照 dataset 和 shot 自动选择：
 `{shot}-shot/all_refined_class_instructions_{dataset}.json`。
 

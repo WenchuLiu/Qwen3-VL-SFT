@@ -26,9 +26,6 @@ fi
 if [[ "${IE:-0}" == "1" || "${INSTRUCTION_ENHANCEMENT:-0}" == "1" ]]; then
   IE_MODE=1
 fi
-if [[ -n "${CATEGORY_DESCRIPTIONS:-}" ]]; then
-  IE_MODE=1
-fi
 if [[ "${DETPO:-0}" == "1" || "${DETPO_PROMPT:-0}" == "1" ]]; then
   DETPO_MODE=1
 fi
@@ -45,7 +42,6 @@ for argument in "$@"; do
     IE_FLAG_IN_ARGS=1
   fi
   if [[ "${argument}" == "--category-descriptions" || "${argument}" == --category-descriptions=* ]]; then
-    IE_MODE=1
     CATEGORY_DESCRIPTIONS_FLAG_IN_ARGS=1
   fi
   if [[ "${argument}" == "--detpo" ]]; then
@@ -57,6 +53,12 @@ for argument in "$@"; do
     DETPO_PROMPTS_FLAG_IN_ARGS=1
   fi
 done
+
+# A description file supplies DetPO's 0-shot prompt too; infer IE only when
+# DetPO has not been selected. Explicit IE + DetPO remains an error.
+if [[ "${DETPO_MODE}" == "0" && ( -n "${CATEGORY_DESCRIPTIONS:-}" || "${CATEGORY_DESCRIPTIONS_FLAG_IN_ARGS}" == "1" ) ]]; then
+  IE_MODE=1
+fi
 
 if [[ "${DETPO_MODE}" == "1" && "${IE_MODE}" == "1" ]]; then
   echo "DETPO and IE are mutually exclusive prompt modes; choose one." >&2
