@@ -1,22 +1,20 @@
 #!/usr/bin/env bash
 # Single-node, four-GPU BF16 LoRA SFT. Defaults target Qwen3-VL-4B, not 8B.
-# Paths below are relative to the repository root unless absolute.
+# Run this script from the repository root; default paths are relative to it.
 # Example: DATASET=data/coco/train_sft_10pct_1to4_11829.json bash scripts/train_lora_r64_4x3090.sh
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python}"
-MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-${ROOT_DIR}/weights/Qwen3-VL-4B-Instruct}"
+MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-weights/Qwen3-VL-4B-Instruct}"
 DATASET="${DATASET:?Set DATASET to a JSON/JSONL SFT file}"
-DATA_ROOT="${DATA_ROOT:-${ROOT_DIR}}"
+DATA_ROOT="${DATA_ROOT:-.}"
 RUN_ID="${RUN_ID:-qwen3vl-4b-r64-4x3090-$(date +%Y%m%d-%H%M%S)}"
-OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/outputs/train/sft/${RUN_ID}}"
+OUTPUT_DIR="${OUTPUT_DIR:-outputs/train/sft/${RUN_ID}}"
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
 export TOKENIZERS_PARALLELISM=false
-export PYTHONPATH="${ROOT_DIR}:${PYTHONPATH:-}"
-cd "${ROOT_DIR}"
+export PYTHONPATH=".:${PYTHONPATH:-}"
 
 ARGS=(
   --model-name-or-path "${MODEL_NAME_OR_PATH}"
