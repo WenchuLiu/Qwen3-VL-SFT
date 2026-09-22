@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
+from ...data.paths import resolve_media_path
 from .metrics import evaluate_episode_predictions, trainer_metrics
 from .protocol import (
     DETPO_PROMPT_VERSION,
@@ -19,12 +20,7 @@ from .protocol import (
 
 
 def _resolve_media_path(value: object, base_path: Path) -> object:
-    if not isinstance(value, str) or not value:
-        return value
-    if value.startswith(("http://", "https://", "file://", "data:image")):
-        return value
-    path = Path(value).expanduser()
-    return str(path.resolve() if path.is_absolute() else (base_path / path).resolve())
+    return resolve_media_path(value, base_path)
 
 
 def file_sha256(path: str | Path) -> str:
@@ -32,8 +28,17 @@ def file_sha256(path: str | Path) -> str:
     return hashlib.sha256(Path(path).expanduser().resolve().read_bytes()).hexdigest()
 
 
-def load_episodes(path: str | Path) -> tuple[dict, list[dict]]:
+def load_episodes(
+    path: str | Path,
+    *,
+    media_root: str | Path | None = None,
+) -> tuple[dict, list[dict]]:
     path = Path(path).expanduser().resolve()
+    media_base = (
+        Path(media_root).expanduser().resolve()
+        if media_root is not None
+        else path.parent
+    )
     with path.open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
     if isinstance(payload, dict):
@@ -44,10 +49,9 @@ def load_episodes(path: str | Path) -> tuple[dict, list[dict]]:
         records = payload
     if not isinstance(records, list) or not records:
         raise ValueError(f"evaluation file contains no episodes: {path}")
-    if isinstance(metadata.get("query_annotations"), str):
-        metadata["query_annotations"] = _resolve_media_path(
-            metadata["query_annotations"], path.parent
-        )
+    for key in ("support_annotations", "query_annotations"):
+        if isinstance(metadata.get(key), str):
+            metadata[key] = _resolve_media_path(metadata[key], media_base)
     normalized_records = []
     for index, record in enumerate(records):
         if not isinstance(record, dict):
@@ -71,12 +75,12 @@ def load_episodes(path: str | Path) -> tuple[dict, list[dict]]:
             raise ValueError(f"episode {index} support frames must be objects")
         normalized = dict(record)
         normalized["support"] = [
-            {**frame, "image": _resolve_media_path(frame.get("image"), path.parent)}
+            {**frame, "image": _resolve_media_path(frame.get("image"), media_base)}
             for frame in record["support"]
         ]
         normalized["query"] = {
             **record["query"],
-            "image": _resolve_media_path(record["query"].get("image"), path.parent),
+            "image": _resolve_media_path(record["query"].get("image"), media_base),
         }
         normalized_records.append(normalized)
     return metadata, normalized_records
@@ -342,6 +346,7 @@ def evaluate_checkpoint(
     max_pixels: int,
     max_new_tokens: int,
     attention: str,
+    data_root: str | Path | None = None,
     visual_enhancement: bool = False,
     instruction_enhancement: bool = False,
     detpo: bool = False,
@@ -371,7 +376,7 @@ def evaluate_checkpoint(
 
         model = PeftModel.from_pretrained(model, adapter_path, is_trainable=False)
     processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
-    metadata, records = load_episodes(episodes_path)
+    metadata, records = load_episodes(episodes_path, media_root=data_root)
     coco_annotations_path = metadata.get("query_annotations")
     started = time.monotonic()
     result = evaluate_loaded_model(

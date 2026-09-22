@@ -64,8 +64,11 @@ defaults are under `outputs/eval/`. Set `OUTPUT_DIR`, `WORK_ROOT`, or `EVAL_ROOT
 to place a run on another filesystem without changing the launchers.
 
 The `train_lora_r64_4x3090.sh` preset evaluates after every epoch using
-`data/coco/coco/val_episodes_500_124_inst-v5.json` (1,500 episodes: 500 each
-for 1/2/4-shot evaluation).
+`data/coco/val_episodes_500_124_inst-v5.json` (1,500 episodes: 500 each
+for 1/2/4-shot evaluation). `DATA_ROOT` should point to a directory containing
+the local COCO images, normally `COCO/train2017`, `COCO/val2017`, and
+`COCO/annotations`; stale absolute paths in manifests are relocated under this
+root automatically.
 Override `EVAL_EPISODES` to use another manifest, or pass
 `--eval-mode none --eval-strategy no` to disable in-training evaluation.
 

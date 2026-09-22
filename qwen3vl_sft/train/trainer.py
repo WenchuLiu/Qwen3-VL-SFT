@@ -281,13 +281,15 @@ class GenerationEvalTrainer(TrainingTelemetryTrainer):
         generation_eval_max_pixels: int,
         generation_eval_max_new_tokens: int,
         generation_eval_model_path: str,
+        generation_eval_media_root: str | Path | None = None,
         generation_eval_visual_enhancement: bool = False,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.generation_eval_episodes = str(Path(generation_eval_episodes).resolve())
         self.generation_eval_metadata, self.generation_eval_records = load_episodes(
-            self.generation_eval_episodes
+            self.generation_eval_episodes,
+            media_root=generation_eval_media_root,
         )
         self.generation_eval_processor = generation_eval_processor
         self.generation_eval_batch_size = generation_eval_batch_size

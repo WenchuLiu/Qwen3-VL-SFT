@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 from typing import Mapping
 
+from .paths import resolve_media_path
 
 _MEDIA_PATTERN = re.compile(r"(<image>|<video>)")
 
@@ -13,8 +14,10 @@ _MEDIA_PATTERN = re.compile(r"(<image>|<video>)")
 def _resolve_path(value: object, base_path: Path) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError("media paths must be non-empty strings")
-    path = Path(value).expanduser()
-    return str(path.resolve() if path.is_absolute() else (base_path / path).resolve())
+    resolved = resolve_media_path(value, base_path)
+    if not isinstance(resolved, str) or not resolved:
+        raise ValueError("media paths must be non-empty strings")
+    return resolved
 
 
 def build_messages(record: Mapping[str, object], *, base_path: str | Path = ".") -> list[dict]:

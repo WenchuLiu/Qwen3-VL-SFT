@@ -15,15 +15,14 @@ from pathlib import Path
 import torch
 from transformers import TrainingArguments, set_seed
 
-from .arguments import build_train_parser, data_config_from_args
-from .data import make_data_module
 from ..model.loader import (
     configure_trainable_parameters,
     load_model_and_processor,
     save_model_and_processor,
 )
+from .arguments import build_train_parser, data_config_from_args
+from .data import make_data_module
 from .trainer import GenerationEvalTrainer, TrainingTelemetryTrainer
-
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +203,7 @@ def train(args) -> None:
             generation_eval_max_pixels=args.coco_eval_max_pixels or args.max_pixels,
             generation_eval_max_new_tokens=args.coco_eval_max_new_tokens,
             generation_eval_model_path=args.model_name_or_path,
+            generation_eval_media_root=args.data_root,
             generation_eval_visual_enhancement=getattr(
                 args, "visual_enhancement", False
             ),

@@ -105,7 +105,7 @@ class TrainingTelemetryTest(unittest.TestCase):
         self.assertIn("--eval-mode generation", command)
         self.assertIn("--eval-strategy epoch", command)
         self.assertIn(
-            "--coco-eval-episodes data/coco/coco/val_episodes_500_124_inst-v5.json",
+            "--coco-eval-episodes data/coco/val_episodes_500_124_inst-v5.json",
             command,
         )
 

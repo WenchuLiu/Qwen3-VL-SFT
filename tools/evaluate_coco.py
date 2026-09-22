@@ -21,6 +21,11 @@ def main() -> None:
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--adapter-path", default=None)
     parser.add_argument("--episodes", required=True)
+    parser.add_argument(
+        "--data-root",
+        default=None,
+        help="Root containing COCO/train2017, COCO/val2017, and annotations.",
+    )
     parser.add_argument("--output", required=True)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--batch-size", type=int, default=1)
@@ -65,6 +70,7 @@ def main() -> None:
         max_pixels=args.max_pixels,
         max_new_tokens=args.max_new_tokens,
         attention=args.attention,
+        data_root=args.data_root,
         visual_enhancement=args.visual_enhancement,
         instruction_enhancement=args.instruction_enhancement,
         category_descriptions_path=args.category_descriptions,

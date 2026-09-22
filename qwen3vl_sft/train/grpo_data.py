@@ -14,6 +14,7 @@ from typing import Iterable, Mapping, Sequence
 from torch.utils.data import Dataset
 
 from ..data.messages import build_messages
+from ..data.paths import resolve_media_path
 from ..data.processing import configure_processor_pixels
 from ..evaluation.coco.protocol import build_eval_messages, build_question
 from .dataset import load_records
@@ -21,12 +22,7 @@ from .rewards import parse_target_boxes
 
 
 def _resolve_media(value: object, base_path: Path) -> object:
-    if not isinstance(value, str) or not value:
-        return value
-    if value.startswith(("http://", "https://", "file://", "data:image")):
-        return value
-    path = Path(value).expanduser()
-    return str(path.resolve() if path.is_absolute() else (base_path / path).resolve())
+    return resolve_media_path(value, base_path)
 
 
 def _resolve_message_media(messages: Sequence[Mapping[str, object]], base_path: Path) -> list[dict]:
