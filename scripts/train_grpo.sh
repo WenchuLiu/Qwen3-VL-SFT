@@ -4,7 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:?Set MODEL_NAME_OR_PATH to a model path or ID}"
+ADAPTER_PATH="${ADAPTER_PATH:-}"
 DATASET="${DATASET:?Set DATASET to a JSON/JSONL GRPO file}"
+DATA_ROOT="${DATA_ROOT:-}"
 RUN_ID="${RUN_ID:-qwen3vl-grpo-$(date +%Y%m%d-%H%M%S)}"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/outputs/train/grpo/${RUN_ID}}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
@@ -56,6 +58,12 @@ ARGS=(
 )
 if [[ -n "${REFERENCE_MODEL_NAME_OR_PATH:-}" ]]; then
   ARGS+=(--reference-model-name-or-path "${REFERENCE_MODEL_NAME_OR_PATH}")
+fi
+if [[ -n "${ADAPTER_PATH}" ]]; then
+  ARGS+=(--adapter-path "${ADAPTER_PATH}")
+fi
+if [[ -n "${DATA_ROOT}" ]]; then
+  ARGS+=(--data-root "${DATA_ROOT}")
 fi
 if [[ -n "${RESUME_FROM_CHECKPOINT:-}" ]]; then
   ARGS+=(--resume-from-checkpoint "${RESUME_FROM_CHECKPOINT}")

@@ -16,6 +16,30 @@ def load_model_and_processor(args):
     """Load a Qwen3-VL checkpoint and configure its processor."""
     from transformers import AutoModelForImageTextToText, AutoProcessor
 
+    adapter_path = getattr(args, "adapter_path", None)
+    base_path = Path(args.model_name_or_path).expanduser()
+    adapter_reference = adapter_path
+    if adapter_path and not args.lora_enable:
+        raise ValueError("--adapter-path requires --lora-enable true")
+    if (
+        adapter_path
+        and base_path.is_dir()
+        and (base_path / "adapter_config.json").is_file()
+    ):
+        raise ValueError(
+            "--model-name-or-path must point to the base model when --adapter-path is set"
+        )
+    if adapter_path:
+        local_adapter_path = Path(adapter_path).expanduser()
+        if local_adapter_path.exists() and not local_adapter_path.is_dir():
+            raise NotADirectoryError(f"adapter path is not a directory: {local_adapter_path}")
+        if local_adapter_path.is_dir():
+            if not (local_adapter_path / "adapter_config.json").is_file():
+                raise FileNotFoundError(
+                    f"adapter_config.json not found in adapter directory: {local_adapter_path}"
+                )
+            adapter_reference = str(local_adapter_path.resolve())
+
     dtype = torch.bfloat16 if args.bf16 else (torch.float16 if args.fp16 else None)
     model = AutoModelForImageTextToText.from_pretrained(
         args.model_name_or_path,
@@ -24,6 +48,14 @@ def load_model_and_processor(args):
         attn_implementation=args.attn_implementation,
         trust_remote_code=True,
     )
+    if adapter_reference:
+        from peft import PeftModel
+
+        model = PeftModel.from_pretrained(
+            model,
+            adapter_reference,
+            is_trainable=True,
+        )
     processor = AutoProcessor.from_pretrained(
         args.model_name_or_path,
         cache_dir=args.cache_dir,
@@ -36,7 +68,26 @@ def load_model_and_processor(args):
 
 def configure_trainable_parameters(model, args):
     """Apply either the LoRA policy or the explicit full-tuning policy."""
+    adapter_path = getattr(args, "adapter_path", None)
+    if adapter_path and not args.lora_enable:
+        raise ValueError("--adapter-path requires --lora-enable true")
+
     if args.lora_enable:
+        if adapter_path:
+            if not getattr(model, "peft_config", None):
+                raise ValueError("--adapter-path was set, but the model has no loaded PEFT adapter")
+            trainable = sum(
+                parameter.numel()
+                for parameter in model.parameters()
+                if parameter.requires_grad
+            )
+            if trainable == 0:
+                raise ValueError(
+                    "the loaded adapter has no trainable parameters; it must be loaded with is_trainable=True"
+                )
+            model.print_trainable_parameters()
+            return model
+
         if args.lora_r < 1 or args.lora_alpha < 1:
             raise ValueError("lora-r and lora-alpha must be positive")
         if not 0 <= args.lora_dropout < 1:

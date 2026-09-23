@@ -142,6 +142,11 @@ def add_grpo_arguments(parser: argparse.ArgumentParser) -> None:
     """Add rollout and reward arguments for score-aware GRPO training."""
     group = parser.add_argument_group("GRPO rollout and rewards")
     group.add_argument(
+        "--adapter-path",
+        default=None,
+        help="Optional LoRA adapter to continue training, loaded on top of model-name-or-path.",
+    )
+    group.add_argument(
         "--reward-functions",
         nargs="+",
         default=["iou", "score", "format"],

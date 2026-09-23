@@ -124,6 +124,21 @@ OUTPUT_DIR=outputs/train/grpo/qwen3vl-grpo \
 bash scripts/train_grpo.sh
 ```
 
+To continue GRPO from a LoRA SFT run, pass the base model and adapter
+separately. The adapter is loaded as trainable and GRPO updates those existing
+LoRA weights:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 \
+NPROC_PER_NODE=2 \
+MODEL_NAME_OR_PATH=weights/Qwen3-VL-4B-Instruct \
+ADAPTER_PATH=outputs/train/sft/qwen3vl-4b-r64-2x3090-20260922-235301/checkpoint-2960 \
+DATASET=data/coco/train_sft_10pct_1to2to4_11829_inst-v5.json \
+DATA_ROOT=data \
+OUTPUT_DIR=outputs/train/grpo/qwen3vl-4b-sft-grpo \
+bash scripts/train_grpo.sh
+```
+
 `qwen3vl_sft.train.grpo_data` accepts the repository's SFT conversation
 records, COCO episode records with `support`/`query`, and generic records with
 a conversational `prompt`. The final answer is not fed to the model during a
