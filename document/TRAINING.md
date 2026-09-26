@@ -89,6 +89,18 @@ comparability with the other experiments; handle memory pressure through batch
 size, checkpointing, or model/runtime memory optimizations instead.
 Four DDP workers each hold a complete model; their VRAM is not pooled.
 
+For two RTX 3090 GPUs, use the matching preset:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 \
+DATASET=data/coco/train_sft_10pct_1to4_11829.json \
+bash scripts/train_lora_r64_2x3090.sh
+```
+
+It uses two DDP workers and defaults to 4 gradient accumulation steps, keeping
+the same effective batch size of 16 as the four-GPU preset. All other training,
+logging, checkpoint, and 0/1/2/4-shot evaluation defaults are shared.
+
 Environment variables override the preset values shown in the script. Additional
 CLI arguments are forwarded, so a short training check is:
 
@@ -138,6 +150,34 @@ DATA_ROOT=data \
 OUTPUT_DIR=outputs/train/grpo/qwen3vl-4b-sft-grpo \
 bash scripts/train_grpo.sh
 ```
+
+For FSDP full sharding across 2 or 4 GPUs, enable it explicitly.
+FSDP shards model parameters, gradients, and optimizer states; each rank still
+processes its own prompt. Keep the image pixel limits unchanged if you need the
+original resolution:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+NPROC_PER_NODE=4 \
+FSDP_MODE=full_shard \
+MODEL_NAME_OR_PATH=weights/Qwen3-VL-4B-Instruct \
+ADAPTER_PATH=outputs/train/sft/qwen3vl-4b-r64-2x3090-20260922-235301/checkpoint-2220 \
+DATASET=data/coco/train_sft_10pct_1to2to4_11829_inst-v5.json \
+DATA_ROOT=data \
+OUTPUT_DIR=outputs/train/grpo/qwen3vl-4b-sft-grpo-fsdp4 \
+NUM_GENERATIONS=4 \
+MAX_PROMPT_LENGTH=4096 \
+MAX_COMPLETION_LENGTH=512 \
+MIN_PIXELS=4096 \
+MAX_PIXELS=640000 \
+bash scripts/train_grpo.sh
+```
+
+For 2 GPUs, set `CUDA_VISIBLE_DEVICES=0,1`, `NPROC_PER_NODE=2`, and use a
+different output directory. FSDP can reduce parameter memory, but it does not
+shard per-prompt image activations or the full-sequence logits; unusually large
+multi-image prompts can still exceed one card's memory. Generation also gathers
+FSDP units repeatedly, so expect it to run more slowly than ordinary DDP.
 
 `qwen3vl_sft.train.grpo_data` accepts the repository's SFT conversation
 records, COCO episode records with `support`/`query`, and generic records with

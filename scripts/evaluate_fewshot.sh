@@ -10,6 +10,7 @@ cd "${ROOT_DIR}"
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
 MODEL_PATH="${MODEL_PATH:-${CKPT:-weights/Qwen3-VL-4B-Instruct}}"
+ADAPTER_PATH="${ADAPTER_PATH:-}"
 DATA_ROOT="${DATA_ROOT:-data}"
 DEFAULT_DATASETS=(ArTaxOr clipart1k FISH NEU-DET UODD VISUALDIOR)
 VE_MODE=0
@@ -126,6 +127,9 @@ LOG_FILE="${LOG_FILE:-${WORK_ROOT}/evaluation.log}"
 exec > >(tee -a "${LOG_FILE}") 2>&1
 
 echo "model_path=${MODEL_PATH}"
+if [[ -n "${ADAPTER_PATH}" ]]; then
+  echo "adapter_path=${ADAPTER_PATH}"
+fi
 echo "data_root=${DATA_ROOT}"
 echo "work_root=${WORK_ROOT}"
 echo "datasets=${DATASET_LIST[*]}"
@@ -166,6 +170,9 @@ EVAL_ARGS=(
   --min-box-area-ratio "${MIN_BOX_AREA_RATIO}"
   --attention "${ATTENTION}"
 )
+if [[ -n "${ADAPTER_PATH}" ]]; then
+  EVAL_ARGS+=(--adapter-path "${ADAPTER_PATH}")
+fi
 if [[ -n "${MAX_NEW_TOKENS}" ]]; then
   EVAL_ARGS+=(--max-new-tokens "${MAX_NEW_TOKENS}")
 fi

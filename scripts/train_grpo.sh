@@ -29,6 +29,7 @@ ARGS=(
   --output-dir "${OUTPUT_DIR}"
   --run-name "${RUN_NAME}"
   --report-to "${REPORT_TO}"
+  --fsdp-mode "${FSDP_MODE:-none}"
   --eval-mode none
   --eval-strategy no
   --reward-functions "${REWARD_LIST[@]}"

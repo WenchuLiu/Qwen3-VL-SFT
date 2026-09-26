@@ -27,6 +27,33 @@ from .trainer import GenerationEvalTrainer, TrainingTelemetryTrainer
 logger = logging.getLogger(__name__)
 
 
+def _patch_torch_checkpoint_cpu_autocast() -> None:
+    """Bridge old checkpoint code to the current CPU autocast API."""
+    cpu_amp = getattr(getattr(torch, "cpu", None), "amp", None)
+    modern_amp = getattr(torch, "amp", None)
+    legacy_autocast = getattr(cpu_amp, "autocast", None)
+    modern_autocast = getattr(modern_amp, "autocast", None)
+    if legacy_autocast is None or modern_autocast is None:
+        return
+    if getattr(legacy_autocast, "_qwen3vl_modern_api", False):
+        return
+
+    def cpu_autocast(
+        enabled: bool = True,
+        dtype: torch.dtype = torch.bfloat16,
+        cache_enabled: bool = True,
+    ):
+        return modern_autocast(
+            "cpu",
+            enabled=enabled,
+            dtype=dtype,
+            cache_enabled=cache_enabled,
+        )
+
+    cpu_autocast._qwen3vl_modern_api = True
+    cpu_amp.autocast = cpu_autocast
+
+
 def _disable_proxy_environment() -> None:
     """Prevent training and metric logging from inheriting a stale proxy."""
     for name in (
@@ -165,6 +192,8 @@ def _training_args(args):
 
 def train(args) -> None:
     _disable_proxy_environment()
+    if args.gradient_checkpointing:
+        _patch_torch_checkpoint_cpu_autocast()
     output_dir = Path(args.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     set_seed(args.seed)

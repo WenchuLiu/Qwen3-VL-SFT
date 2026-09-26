@@ -142,6 +142,15 @@ def add_grpo_arguments(parser: argparse.ArgumentParser) -> None:
     """Add rollout and reward arguments for score-aware GRPO training."""
     group = parser.add_argument_group("GRPO rollout and rewards")
     group.add_argument(
+        "--fsdp-mode",
+        choices=("none", "full_shard"),
+        default="none",
+        help=(
+            "Shard model parameters, gradients, and optimizer states across all ranks. "
+            "Launch with at least 2 GPUs; use NPROC_PER_NODE=2 or 4 in train_grpo.sh."
+        ),
+    )
+    group.add_argument(
         "--adapter-path",
         default=None,
         help="Optional LoRA adapter to continue training, loaded on top of model-name-or-path.",

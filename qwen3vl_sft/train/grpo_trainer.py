@@ -9,13 +9,16 @@ RoPE implementation directly.
 from __future__ import annotations
 
 import copy
+import inspect
 import math
 from collections import defaultdict
 from contextlib import nullcontext
 from typing import Any, Callable, Mapping, Sequence
 
 import torch
+from torch.utils.checkpoint import checkpoint
 from transformers import Trainer
+from transformers.generation import GenerationMixin
 from transformers.trainer_callback import TrainerCallback
 
 from ..data.processing import _grid_values, _token_id
@@ -25,6 +28,78 @@ from .rewards import REWARD_FUNCS_REGISTRY
 
 
 RewardFunc = Callable[..., Sequence[float]]
+_LOGPROB_VOCAB_CHUNK_SIZE = 2048
+
+
+class _FSDPGenerationProxy(GenerationMixin):
+    """Run GenerationMixin decoding through the FSDP-wrapped model forward."""
+
+    def __init__(self, fsdp_model, base_model) -> None:
+        self.__dict__["_fsdp_model"] = fsdp_model
+        self.__dict__["_base_model"] = base_model
+        generation_model = (
+            base_model.get_base_model()
+            if callable(getattr(base_model, "get_base_model", None))
+            else base_model
+        )
+
+        def forward_through_fsdp(*args, **kwargs):
+            return fsdp_model(*args, **kwargs)
+
+        # GenerationMixin inspects the forward signature to discover model
+        # inputs. Keep the underlying Qwen signature while dispatching calls
+        # through the FSDP wrapper so each FSDP unit can all-gather as needed.
+        forward_through_fsdp.__signature__ = inspect.signature(generation_model.forward)
+        self.__dict__["forward"] = forward_through_fsdp
+
+    def __getattr__(self, name: str):
+        return getattr(self.__dict__["_base_model"], name)
+
+    def __call__(self, *args, **kwargs):
+        return self.__dict__["_fsdp_model"](*args, **kwargs)
+
+
+def _chunked_logsumexp(logits: torch.Tensor) -> torch.Tensor:
+    """Compute log-sum-exp over the vocabulary without a full-size temporary.
+
+    The LM head logits can be several GiB for multimodal GRPO batches.  A
+    full-vocabulary ``log_softmax`` allocates another tensor of the same
+    shape.  Reducing vocabulary slices and combining their log-sum-exp values
+    bounds temporary memory by ``_LOGPROB_VOCAB_CHUNK_SIZE`` instead.  During
+    training, checkpoint each reduction so backward recomputes one slice at a
+    time rather than retaining all of the float32 intermediates.
+    """
+    vocab_size = logits.shape[-1]
+    log_normalizer = None
+
+    def reduce_chunk(chunk: torch.Tensor) -> torch.Tensor:
+        # Accumulate in float32, matching log_softmax's numerically stable
+        # behavior under bf16/fp16 model execution without upcasting all logits.
+        return torch.logsumexp(chunk.float(), dim=-1)
+
+    for start in range(0, vocab_size, _LOGPROB_VOCAB_CHUNK_SIZE):
+        end = min(start + _LOGPROB_VOCAB_CHUNK_SIZE, vocab_size)
+        chunk = logits[..., start:end]
+        if torch.is_grad_enabled() and chunk.requires_grad:
+            chunk_log_normalizer = checkpoint(
+                reduce_chunk,
+                chunk,
+                use_reentrant=False,
+            )
+        else:
+            chunk_log_normalizer = reduce_chunk(chunk)
+
+        if log_normalizer is None:
+            log_normalizer = chunk_log_normalizer
+        else:
+            log_normalizer = torch.logaddexp(
+                log_normalizer,
+                chunk_log_normalizer,
+            )
+
+    if log_normalizer is None:
+        raise ValueError("logits must have a non-empty vocabulary dimension")
+    return log_normalizer
 
 
 def _grid_tensor(value: object) -> torch.Tensor | None:
@@ -298,11 +373,21 @@ class MultimodalGRPOTrainer(Trainer):
     def _generate_completions(self, model, prompt_inputs: Mapping[str, object]) -> torch.Tensor:
         """Sample one completion at a time to preserve multimodal alignment."""
         unwrapped_model = self.accelerator.unwrap_model(model)
-        was_training = unwrapped_model.training
+        is_fsdp = False
+        try:
+            from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+            is_fsdp = isinstance(model, FSDP)
+        except ImportError:
+            pass
+        generation_model = (
+            _FSDPGenerationProxy(model, unwrapped_model) if is_fsdp else unwrapped_model
+        )
+        was_training = model.training
         original_use_cache = getattr(unwrapped_model.config, "use_cache", None)
         if original_use_cache is not None:
             unwrapped_model.config.use_cache = True
-        unwrapped_model.eval()
+        model.eval()
         sequences = []
         try:
             for _ in range(self.num_generations):
@@ -316,20 +401,24 @@ class MultimodalGRPOTrainer(Trainer):
                     do_sample=self.temperature > 0,
                     num_return_sequences=1,
                 )
+                if is_fsdp:
+                    # Each rank samples independently, so keep FSDP forward
+                    # collectives aligned when ranks finish at different times.
+                    generation_kwargs["synced_gpus"] = True
                 if self.temperature > 0:
                     generation_kwargs["temperature"] = self.temperature
                     generation_kwargs["top_p"] = self.top_p
                     if self.top_k:
                         generation_kwargs["top_k"] = self.top_k
                 with torch.inference_mode():
-                    generated = unwrapped_model.generate(**generation_kwargs)
+                    generated = generation_model.generate(**generation_kwargs)
                 if hasattr(generated, "sequences"):
                     generated = generated.sequences
                 sequences.append(generated[0])
         finally:
             if original_use_cache is not None:
                 unwrapped_model.config.use_cache = original_use_cache
-            unwrapped_model.train(was_training)
+            model.train(was_training)
 
         pad_token_id = self.processor.tokenizer.pad_token_id
         if pad_token_id is None:
@@ -421,12 +510,12 @@ class MultimodalGRPOTrainer(Trainer):
         outputs = model(**kwargs, use_cache=False)
         logits = outputs.logits[:, :-1, :]
         target_ids = input_ids[:, 1:]
-        log_probs = logits.log_softmax(dim=-1)
-        token_logps = torch.gather(
-            log_probs,
+        target_logits = torch.gather(
+            logits,
             dim=-1,
             index=target_ids.unsqueeze(-1),
-        ).squeeze(-1)
+        ).squeeze(-1).float()
+        token_logps = target_logits - _chunked_logsumexp(logits)
         return token_logps[:, prompt_length - 1 :]
 
     def _compute_rewards(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 
 import torch
@@ -30,6 +31,24 @@ from .runner import (
 logger = logging.getLogger(__name__)
 
 
+def _validate_fsdp_launch(args) -> None:
+    if args.fsdp_mode != "full_shard":
+        return
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    if world_size < 2:
+        raise ValueError(
+            "--fsdp-mode full_shard requires at least 2 processes; "
+            "set NPROC_PER_NODE=2 or 4 when launching scripts/train_grpo.sh"
+        )
+    if not torch.cuda.is_available():
+        raise ValueError("--fsdp-mode full_shard requires CUDA GPUs")
+    if world_size > torch.cuda.device_count():
+        raise ValueError(
+            f"FSDP launch requests {world_size} processes, but only "
+            f"{torch.cuda.device_count()} CUDA devices are visible"
+        )
+
+
 def _grpo_training_args(args) -> TrainingArguments:
     if args.eval_mode != "none" or args.eval_strategy != "no":
         raise ValueError(
@@ -38,6 +57,23 @@ def _grpo_training_args(args) -> TrainingArguments:
         )
     if args.bf16 and args.fp16:
         raise ValueError("--bf16 and --fp16 cannot both be enabled")
+    fsdp_enabled = args.fsdp_mode == "full_shard"
+
+    fsdp_config = None
+    fsdp = None
+    if fsdp_enabled:
+        fsdp = "full_shard auto_wrap"
+        fsdp_config = {
+            "transformer_layer_cls_to_wrap": [
+                "Qwen3VLTextDecoderLayer",
+                "Qwen3VLVisionBlock",
+            ],
+            "use_orig_params": True,
+            "limit_all_gathers": True,
+            "sync_module_states": True,
+            "activation_checkpointing": bool(args.gradient_checkpointing),
+        }
+
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         overwrite_output_dir=False,
@@ -58,8 +94,12 @@ def _grpo_training_args(args) -> TrainingArguments:
         save_total_limit=args.save_total_limit,
         eval_strategy="no",
         dataloader_num_workers=args.dataloader_num_workers,
-        gradient_checkpointing=args.gradient_checkpointing,
+        # FSDP's non-reentrant activation checkpointing avoids the extra
+        # parameter all-gathers caused by model-level gradient checkpointing.
+        gradient_checkpointing=args.gradient_checkpointing and not fsdp_enabled,
         gradient_checkpointing_kwargs={"use_reentrant": False},
+        fsdp=fsdp,
+        fsdp_config=fsdp_config,
         ddp_find_unused_parameters=args.ddp_find_unused_parameters,
         remove_unused_columns=False,
         label_names=[],
@@ -119,6 +159,7 @@ def _reward_weights(names: list[str], args) -> list[float]:
 
 def train(args) -> None:
     _disable_proxy_environment()
+    _validate_fsdp_launch(args)
     output_dir = Path(args.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     set_seed(args.seed)
@@ -140,7 +181,11 @@ def train(args) -> None:
 
     model, processor = load_model_and_processor(args)
     model.config.use_cache = False
-    if args.gradient_checkpointing and hasattr(model, "enable_input_require_grads"):
+    if (
+        args.gradient_checkpointing
+        and args.fsdp_mode == "none"
+        and hasattr(model, "enable_input_require_grads")
+    ):
         model.enable_input_require_grads()
     model = configure_trainable_parameters(model, args)
 

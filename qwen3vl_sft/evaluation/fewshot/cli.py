@@ -47,7 +47,12 @@ from .config import (
 )
 
 
-def _load_model(model_path: str, device: str, attention: str):
+def _load_model(
+    model_path: str,
+    adapter_path: str | None,
+    device: str,
+    attention: str,
+):
     import torch
     from transformers import AutoModelForImageTextToText, AutoProcessor
 
@@ -59,6 +64,10 @@ def _load_model(model_path: str, device: str, attention: str):
         attn_implementation=attention,
         trust_remote_code=True,
     )
+    if adapter_path:
+        from peft import PeftModel
+
+        model = PeftModel.from_pretrained(model, adapter_path, is_trainable=False)
     processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
     return model, processor
 
@@ -67,6 +76,7 @@ def _generation_worker_loop(
     rank: int,
     device: str,
     model_path: str,
+    adapter_path: str | None,
     attention: str,
     task_queue,
     result_queue,
@@ -83,7 +93,7 @@ def _generation_worker_loop(
         from qwen3vl_sft.evaluation.coco.generation import generate_responses
 
         print(f"[GPU {device}] loading model replica", flush=True)
-        model, processor = _load_model(model_path, device, attention)
+        model, processor = _load_model(model_path, adapter_path, device, attention)
         print(f"[GPU {device}] model ready", flush=True)
 
         while True:
@@ -126,6 +136,7 @@ class GenerationRunner:
         self,
         *,
         model_path: str,
+        adapter_path: str | None,
         device: str,
         num_gpus: int,
         attention: str,
@@ -142,6 +153,7 @@ class GenerationRunner:
         if num_gpus < 1:
             raise ValueError("num_gpus must be positive")
         self.model_path = model_path
+        self.adapter_path = adapter_path
         self.attention = attention
         self.batch_size = batch_size
         self.min_pixels = min_pixels
@@ -160,7 +172,9 @@ class GenerationRunner:
 
         if not self.parallel:
             print(f"[GPU {device}] loading model replica", flush=True)
-            self.model, self.processor = _load_model(model_path, device, attention)
+            self.model, self.processor = _load_model(
+                model_path, adapter_path, device, attention
+            )
             print(f"[GPU {device}] model ready", flush=True)
             self.devices = [device]
             return
@@ -183,6 +197,7 @@ class GenerationRunner:
                     rank,
                     worker_device,
                     model_path,
+                    adapter_path,
                     attention,
                     task_queue,
                     self.result_queue,
@@ -443,6 +458,7 @@ def _evaluate_one(
     *,
     runner: GenerationRunner,
     model_path: str,
+    adapter_path: str | None,
     dataset_name: str,
     manifest: Path,
     result_path: Path,
@@ -473,7 +489,7 @@ def _evaluate_one(
     payload = result_payload(
         result,
         model_path=model_path,
-        adapter_path=None,
+        adapter_path=adapter_path,
         episodes_path=str(manifest.resolve()),
         device=runner.device_label,
         batch_size=batch_size,
@@ -506,6 +522,7 @@ def _evaluate_one(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-path", required=True)
+    parser.add_argument("--adapter-path", default=None)
     parser.add_argument("--data-root", type=Path, default=ROOT / "data")
     parser.add_argument(
         "--work-dir",
@@ -665,6 +682,12 @@ def main() -> None:
         if Path(args.model_path).exists()
         else args.model_path
     )
+    adapter_path = None
+    if args.adapter_path:
+        adapter_path_value = Path(args.adapter_path).expanduser()
+        if not adapter_path_value.is_dir():
+            raise NotADirectoryError(f"adapter path not found: {adapter_path_value}")
+        adapter_path = str(adapter_path_value.resolve())
 
     datasets = [_dataset_dir(data_root, name) for name in args.datasets]
     flat_work_dir = args.flat_work_dir and len(datasets) == 1
@@ -706,6 +729,7 @@ def main() -> None:
         work_dir / "config.json",
         {
             "model_path": model_path,
+            "adapter_path": adapter_path,
             "data_root": str(data_root),
             "work_dir": str(work_dir),
             "datasets": [name for name, _ in datasets],
@@ -771,6 +795,7 @@ def main() -> None:
     )
     with GenerationRunner(
         model_path=model_path,
+        adapter_path=adapter_path,
         device=args.device,
         num_gpus=args.num_gpus,
         attention=args.attention,
@@ -800,6 +825,7 @@ def main() -> None:
             payload = _evaluate_one(
                 runner=runner,
                 model_path=model_path,
+                adapter_path=adapter_path,
                 dataset_name=task["dataset"],
                 manifest=task["manifest"],
                 result_path=task["result"],

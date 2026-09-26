@@ -70,17 +70,26 @@ python -m pip install -e "${ROOT_DIR}" --no-deps
 python - <<'PY'
 import importlib.util
 import os
+from importlib.metadata import version
 
 import accelerate
 import deepspeed
 import peft
 import torch
 import transformers
+from pycocotools.coco import COCO
+from pycocotools.cocoeval import COCOeval
+
+pycocotools_version = version("pycocotools")
 
 print(f"torch: {torch.__version__}; torch CUDA: {torch.version.cuda}")
 print(f"transformers: {transformers.__version__}")
 print(f"accelerate: {accelerate.__version__}")
 print(f"deepspeed: {deepspeed.__version__}; peft: {peft.__version__}")
+print(
+    f"pycocotools: {pycocotools_version}; "
+    f"runtime imports: {COCO.__name__}, {COCOeval.__name__}"
+)
 print(f"flash-attn installed: {importlib.util.find_spec('flash_attn') is not None}")
 
 if not torch.cuda.is_available():

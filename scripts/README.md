@@ -7,6 +7,7 @@ from its own location and uses repository-relative defaults.
 | Script | Role |
 | --- | --- |
 | `train_lora.sh` | supervised LoRA/full-parameter training |
+| `train_lora_r64_2x3090.sh` | two-GPU r=64 LoRA SFT with per-epoch COCO evaluation |
 | `train_lora_r64_4x3090.sh` | four-GPU r=64 LoRA SFT with per-epoch COCO evaluation |
 | `train_grpo.sh` | score-aware multimodal GRPO |
 | `build_coco_train.sh` | build COCO SFT records |
@@ -63,7 +64,8 @@ Training defaults are under `outputs/train/`, while standalone evaluation
 defaults are under `outputs/eval/`. Set `OUTPUT_DIR`, `WORK_ROOT`, or `EVAL_ROOT`
 to place a run on another filesystem without changing the launchers.
 
-The `train_lora_r64_4x3090.sh` preset evaluates after every epoch using the
+The `train_lora_r64_2x3090.sh` and `train_lora_r64_4x3090.sh` presets evaluate
+after every epoch using the
 fixed 0-shot and 1/2/4-shot manifests (2,000 episodes: 500 for each shot).
 Each shot is evaluated in 0/1/2/4 order and sharded across all DDP ranks;
 rank zero prints the combined F1 and mAP metrics without writing a separate
@@ -82,6 +84,12 @@ epoch's COCO metrics are uploaded after evaluation. `DRY_RUN=1` can inspect
 the resolved command without a SwanLab key.
 Override `EVAL_EPISODES` to use another manifest, or pass
 `--eval-mode none --eval-strategy no` to disable in-training evaluation.
+
+The two-GPU preset delegates to the four-GPU preset with two DDP workers and
+defaults to per-device batch size 2 with 4 accumulation steps. Its effective
+batch size is therefore 2 GPUs x 2 samples x 4 accumulation steps = 16, equal
+to the four-GPU default. Environment variables and trailing CLI arguments use
+the same overrides as the four-GPU launcher.
 
 The `shell/` directory and `scripts/cross_domain_datasets/` are retained as
 compatibility paths. They should delegate to these scripts rather than gain new
