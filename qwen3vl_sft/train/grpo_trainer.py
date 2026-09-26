@@ -59,6 +59,29 @@ class _FSDPGenerationProxy(GenerationMixin):
     def __getattr__(self, name: str):
         return getattr(self.__dict__["_base_model"], name)
 
+    def prepare_inputs_for_generation(self, *args, **kwargs):
+        # PEFT delegates this to Qwen3-VL's generation preparation. Ensure the
+        # image/video tensors are used only on the cache prefill pass; some
+        # Transformers/PEFT combinations otherwise keep them on decode steps,
+        # where input_ids contain only newly generated text tokens.
+        model_inputs = self.__dict__["_base_model"].prepare_inputs_for_generation(
+            *args, **kwargs
+        )
+        cache_position = model_inputs.get("cache_position", kwargs.get("cache_position"))
+        is_decode_step = False
+        if cache_position is not None and len(cache_position) > 0:
+            is_decode_step = int(cache_position[0]) != 0
+        if not is_decode_step:
+            past_key_values = model_inputs.get("past_key_values")
+            if hasattr(past_key_values, "get_seq_length"):
+                is_decode_step = int(past_key_values.get_seq_length()) > 0
+            elif isinstance(past_key_values, (tuple, list)) and past_key_values:
+                is_decode_step = past_key_values[0][0].shape[-2] > 0
+        if is_decode_step:
+            model_inputs["pixel_values"] = None
+            model_inputs["pixel_values_videos"] = None
+        return model_inputs
+
     def __call__(self, *args, **kwargs):
         return self.__dict__["_fsdp_model"](*args, **kwargs)
 
