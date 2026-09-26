@@ -34,6 +34,10 @@ _LOGPROB_VOCAB_CHUNK_SIZE = 2048
 class _FSDPGenerationProxy(GenerationMixin):
     """Run GenerationMixin decoding through the FSDP-wrapped model forward."""
 
+    # GenerationMixin's cache capability check reads this on ``cls`` rather
+    # than the wrapped model instance. Qwen3-VL is not a stateful architecture.
+    _is_stateful = False
+
     def __init__(self, fsdp_model, base_model) -> None:
         self.__dict__["_fsdp_model"] = fsdp_model
         self.__dict__["_base_model"] = base_model
