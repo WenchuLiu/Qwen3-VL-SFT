@@ -119,6 +119,7 @@ def _grpo_training_args(args) -> TrainingArguments:
         "temperature",
         "top_p",
         "top_k",
+        "clip_epsilon",
         "kl_coef",
         "iou_threshold",
     ):

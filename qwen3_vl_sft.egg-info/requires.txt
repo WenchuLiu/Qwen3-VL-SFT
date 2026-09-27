@@ -1,0 +1,15 @@
+accelerate>=1.7.0
+numpy>=1.24
+peft>=0.17.0
+Pillow>=10.0
+pycocotools>=2.0.7
+qwen-vl-utils>=0.0.14
+swanlab==0.10.0
+torch>=2.6.0
+transformers>=4.57.0
+
+[dev]
+ruff>=0.8.0
+
+[flash-attn]
+flash-attn>=2.7.4

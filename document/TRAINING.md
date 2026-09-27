@@ -189,8 +189,14 @@ The default registry is `iou score format`. IoU uses greedy one-to-one
 matching at `--iou-threshold`; the score reward gives matched detections their
 emitted score and unmatched detections `1 - score`. Missing score fields get
 zero score reward. Group advantages are normalized over
-`--num-generations` samples and optimized with the sampled-token policy loss
-plus `--kl-coef` KL regularization.
+`--num-generations` samples and optimized with a clipped PPO surrogate; adjust
+its interval with `CLIP_EPSILON` (default `0.2`). For LoRA, the KL reference is
+a frozen copy of the starting adapter, so SFT knowledge remains the anchor.
+
+The token log-probabilities are computed from the unwarped model distribution,
+so GRPO requires `temperature=1`, `top_p=1`, and `top_k=0`. The trainer sets
+these values explicitly for generation and disables dropout for rollout and
+policy scoring.
 
 This first GRPO path intentionally has no generation-based validation loop;
 run the existing fixed-episode COCO evaluator after each saved checkpoint.

@@ -171,10 +171,16 @@ def add_grpo_arguments(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--top-p", type=float, default=1.0)
     group.add_argument("--top-k", type=int, default=0)
     group.add_argument(
+        "--clip-epsilon",
+        type=float,
+        default=0.2,
+        help="PPO clipping interval for the GRPO policy objective.",
+    )
+    group.add_argument(
         "--kl-coef",
         type=float,
         default=0.04,
-        help="KL penalty against the frozen base policy; set to 0 to disable it.",
+        help="KL penalty against the frozen initial policy; set to 0 to disable it.",
     )
     group.add_argument("--iou-threshold", type=float, default=0.5)
     group.add_argument("--iou-reward-weight", type=float, default=1.0)

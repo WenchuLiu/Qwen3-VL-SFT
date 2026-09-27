@@ -140,6 +140,64 @@ def _move_value(value: object, device: torch.device) -> object:
     return value.to(device) if hasattr(value, "to") else value
 
 
+def _add_initial_policy_reference_adapter(model) -> tuple[str, str]:
+    """Clone the active PEFT adapter so KL stays anchored to the initial policy."""
+    peft_config = getattr(model, "peft_config", None)
+    if not peft_config:
+        raise ValueError("cannot create a GRPO reference adapter on a non-PEFT model")
+
+    active = getattr(model, "active_adapters", None)
+    if callable(active):
+        active = active()
+    if not active:
+        active = getattr(model, "active_adapter", None)
+        if callable(active):
+            active = active()
+    if isinstance(active, str):
+        active = [active]
+    if not active and len(peft_config) == 1:
+        active = [next(iter(peft_config))]
+    if len(active or []) != 1:
+        raise ValueError(
+            "GRPO KL anchoring requires exactly one active PEFT adapter; "
+            "select one adapter before training"
+        )
+
+    policy_adapter = active[0]
+    reference_adapter = "grpo_reference"
+    if reference_adapter in peft_config:
+        raise ValueError(
+            f"adapter {reference_adapter!r} is reserved for the frozen GRPO reference"
+        )
+
+    from peft.utils.save_and_load import (
+        get_peft_model_state_dict,
+        set_peft_model_state_dict,
+    )
+
+    policy_state = get_peft_model_state_dict(model, adapter_name=policy_adapter)
+    model.add_adapter(reference_adapter, copy.deepcopy(peft_config[policy_adapter]))
+    set_peft_model_state_dict(
+        model,
+        policy_state,
+        adapter_name=reference_adapter,
+    )
+    model.set_adapter(policy_adapter)
+    return policy_adapter, reference_adapter
+
+
+def _disable_dropout(model) -> None:
+    """Keep rollout and policy scoring deterministic in GRPO."""
+    if model is None:
+        return
+    for module in model.modules():
+        if isinstance(module, torch.nn.Dropout):
+            module.p = 0.0
+    for config in getattr(model, "peft_config", {}).values():
+        if hasattr(config, "lora_dropout"):
+            config.lora_dropout = 0.0
+
+
 class GRPOSwanLabCallback(TrainerCallback):
     """Forward GRPO metrics to an already initialized SwanLab run."""
 
@@ -218,14 +276,26 @@ class MultimodalGRPOTrainer(Trainer):
         if max_completion_length < 1:
             raise ValueError("max_completion_length must be positive")
         temperature = float(getattr(args, "temperature", 1.0))
-        if temperature < 0:
-            raise ValueError("temperature must be non-negative")
+        if temperature <= 0:
+            raise ValueError("temperature must be positive for GRPO sampling")
         top_p = float(getattr(args, "top_p", 1.0))
         if not 0 < top_p <= 1:
             raise ValueError("top_p must be in (0, 1]")
         top_k = int(getattr(args, "top_k", 0))
         if top_k < 0:
             raise ValueError("top_k must be non-negative")
+        if (
+            not math.isclose(temperature, 1.0, rel_tol=0.0, abs_tol=1e-8)
+            or top_p != 1.0
+            or top_k != 0
+        ):
+            raise ValueError(
+                "this GRPO trainer scores the unwarped policy distribution; "
+                "use temperature=1, top_p=1, and top_k=0"
+            )
+        clip_epsilon = float(getattr(args, "clip_epsilon", 0.2))
+        if not 0.0 <= clip_epsilon < 1.0:
+            raise ValueError("clip_epsilon must be in [0, 1)")
         beta = float(getattr(args, "kl_coef", 0.0))
         if beta < 0:
             raise ValueError("kl_coef must be non-negative")
@@ -247,6 +317,7 @@ class MultimodalGRPOTrainer(Trainer):
         self.temperature = temperature
         self.top_p = top_p
         self.top_k = top_k
+        self.clip_epsilon = clip_epsilon
         self.beta = beta
         self.iou_threshold = float(getattr(args, "iou_threshold", 0.5))
         if not 0.0 <= self.iou_threshold <= 1.0:
@@ -256,10 +327,19 @@ class MultimodalGRPOTrainer(Trainer):
         if self.max_prompt_length < 1:
             raise ValueError("max_prompt_length must be positive")
 
-        # LoRA models can disable their adapter to expose the frozen base
-        # policy.  Full-parameter training needs a separate frozen copy for
-        # the KL term; this is the same reference-policy distinction used by
-        # the Visual-RFT trainer.
+        # Freeze a copy of the initial PEFT adapter as the KL anchor. Disabling
+        # the adapter would compare against the bare base model and discard the
+        # SFT policy that GRPO is meant to refine.
+        self.policy_adapter_name = None
+        self.reference_adapter_name = None
+        if beta > 0 and reference_model is None and getattr(model, "peft_config", None):
+            (
+                self.policy_adapter_name,
+                self.reference_adapter_name,
+            ) = _add_initial_policy_reference_adapter(model)
+
+        _disable_dropout(model)
+        _disable_dropout(reference_model)
         if beta > 0 and reference_model is None and not hasattr(model, "disable_adapter"):
             reference_model = copy.deepcopy(model)
         if beta > 0 and reference_model is None and not hasattr(model, "disable_adapter"):
@@ -425,18 +505,18 @@ class MultimodalGRPOTrainer(Trainer):
                 generation_kwargs.pop("position_ids", None)
                 generation_kwargs.update(
                     max_new_tokens=self.max_completion_length,
-                    do_sample=self.temperature > 0,
+                    do_sample=True,
                     num_return_sequences=1,
+                    # Override checkpoint generation defaults so the sampled
+                    # distribution matches the raw token log-probabilities.
+                    temperature=self.temperature,
+                    top_p=self.top_p,
+                    top_k=self.top_k,
                 )
                 if is_fsdp:
                     # Each rank samples independently, so keep FSDP forward
                     # collectives aligned when ranks finish at different times.
                     generation_kwargs["synced_gpus"] = True
-                if self.temperature > 0:
-                    generation_kwargs["temperature"] = self.temperature
-                    generation_kwargs["top_p"] = self.top_p
-                    if self.top_k:
-                        generation_kwargs["top_k"] = self.top_k
                 with torch.inference_mode():
                     generated = generation_model.generate(**generation_kwargs)
                 if hasattr(generated, "sequences"):
@@ -599,93 +679,150 @@ class MultimodalGRPOTrainer(Trainer):
     def _sample_loss(
         self, model, sample: Mapping[str, object]
     ) -> tuple[torch.Tensor, dict[str, float]]:
-        prompt_inputs = self._render_prompt(sample)
-        prompt_ids = prompt_inputs["input_ids"]
-        prompt_mask = prompt_inputs["attention_mask"]
-        prompt_length = prompt_ids.shape[-1]
-        generated = self._generate_completions(model, prompt_inputs)
-        completion_ids = generated[:, prompt_length:]
-        if completion_ids.shape[-1] < 1:
-            raise RuntimeError("generation returned an empty completion")
-        completion_mask = self._completion_mask(completion_ids)
+        was_training = model.training
+        model.eval()
+        try:
+            prompt_inputs = self._render_prompt(sample)
+            prompt_ids = prompt_inputs["input_ids"]
+            prompt_mask = prompt_inputs["attention_mask"]
+            prompt_length = prompt_ids.shape[-1]
+            generated = self._generate_completions(model, prompt_inputs)
+            completion_ids = generated[:, prompt_length:]
+            if completion_ids.shape[-1] < 1:
+                raise RuntimeError("generation returned an empty completion")
+            completion_mask = self._completion_mask(completion_ids)
 
-        texts = self.processor.batch_decode(
-            completion_ids,
-            skip_special_tokens=True,
-            clean_up_tokenization_spaces=False,
-        )
-        completions = [[{"role": "assistant", "content": text}] for text in texts]
-        prompts = [sample["prompt"]] * self.num_generations
-        rewards_per_func, rewards = self._compute_rewards(sample, prompts, completions)
+            texts = self.processor.batch_decode(
+                completion_ids,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )
+            completions = [[{"role": "assistant", "content": text}] for text in texts]
+            prompts = [sample["prompt"]] * self.num_generations
+            rewards_per_func, rewards = self._compute_rewards(sample, prompts, completions)
 
-        repeated_inputs = self._repeat_prompt_inputs(prompt_inputs, self.num_generations)
-        full_ids = torch.cat(
-            [prompt_ids.repeat(self.num_generations, 1), completion_ids],
-            dim=1,
-        )
-        attention_mask = torch.cat(
-            [prompt_mask.repeat(self.num_generations, 1), completion_mask.long()],
-            dim=1,
-        )
-        per_token_logps = self._get_per_token_logps(
-            model,
-            full_ids,
-            attention_mask,
-            repeated_inputs,
-            prompt_length,
-        )
+            repeated_inputs = self._repeat_prompt_inputs(prompt_inputs, self.num_generations)
+            full_ids = torch.cat(
+                [prompt_ids.repeat(self.num_generations, 1), completion_ids],
+                dim=1,
+            )
+            attention_mask = torch.cat(
+                [prompt_mask.repeat(self.num_generations, 1), completion_mask.long()],
+                dim=1,
+            )
 
-        if self.beta > 0:
-            with torch.inference_mode():
-                if self.ref_model is not None:
-                    ref_per_token_logps = self._get_per_token_logps(
-                        self.ref_model,
-                        full_ids,
-                        attention_mask,
-                        repeated_inputs,
-                        prompt_length,
-                    )
-                else:
-                    base_model = self.accelerator.unwrap_model(model)
-                    adapter_context = (
-                        base_model.disable_adapter()
-                        if hasattr(base_model, "disable_adapter")
-                        else nullcontext()
-                    )
-                    with adapter_context:
+            # Save the behavior-policy log-probabilities before building the
+            # current-policy graph, just as the rollout is generated.
+            with torch.no_grad():
+                old_per_token_logps = self._get_per_token_logps(
+                    model,
+                    full_ids,
+                    attention_mask,
+                    repeated_inputs,
+                    prompt_length,
+                )
+            ref_per_token_logps = None
+            if self.beta > 0:
+                with torch.no_grad():
+                    if self.ref_model is not None:
                         ref_per_token_logps = self._get_per_token_logps(
-                            model,
+                            self.ref_model,
                             full_ids,
                             attention_mask,
                             repeated_inputs,
                             prompt_length,
                         )
-            per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (
-                ref_per_token_logps - per_token_logps
-            ) - 1.0
-        else:
-            per_token_kl = torch.zeros_like(per_token_logps)
+                    elif self.reference_adapter_name is not None:
+                        # Switch before constructing the policy graph. PEFT's
+                        # set_adapter also toggles requires_grad on adapter weights.
+                        base_model = self.accelerator.unwrap_model(model)
+                        base_model.set_adapter(self.reference_adapter_name)
+                        try:
+                            ref_per_token_logps = self._get_per_token_logps(
+                                model,
+                                full_ids,
+                                attention_mask,
+                                repeated_inputs,
+                                prompt_length,
+                            )
+                        finally:
+                            base_model.set_adapter(self.policy_adapter_name)
+                    else:
+                        base_model = self.accelerator.unwrap_model(model)
+                        adapter_context = (
+                            base_model.disable_adapter()
+                            if hasattr(base_model, "disable_adapter")
+                            else nullcontext()
+                        )
+                        with adapter_context:
+                            ref_per_token_logps = self._get_per_token_logps(
+                                model,
+                                full_ids,
+                                attention_mask,
+                                repeated_inputs,
+                                prompt_length,
+                            )
 
-        mean_reward = rewards.mean()
-        reward_std = rewards.std(unbiased=False)
-        advantages = (rewards - mean_reward) / (reward_std + 1e-4)
-        ratio = torch.exp(per_token_logps - per_token_logps.detach())
-        token_count = completion_mask.sum(dim=1).clamp_min(1.0)
-        policy_loss = -(
-            ratio * advantages.detach().unsqueeze(1) * completion_mask
-        ).sum(dim=1) / token_count
-        kl_loss = (per_token_kl * completion_mask).sum(dim=1) / token_count
-        loss = (policy_loss + self.beta * kl_loss).mean()
+            per_token_logps = self._get_per_token_logps(
+                model,
+                full_ids,
+                attention_mask,
+                repeated_inputs,
+                prompt_length,
+            )
+            valid_tokens = completion_mask.bool()
+            if valid_tokens.any() and not torch.allclose(
+                per_token_logps.detach()[valid_tokens],
+                old_per_token_logps[valid_tokens],
+                atol=0.02,
+                rtol=0.002,
+            ):
+                max_difference = (
+                    per_token_logps.detach()[valid_tokens]
+                    - old_per_token_logps[valid_tokens]
+                ).abs().max().item()
+                raise RuntimeError(
+                    "rollout and policy log-probabilities diverged before the optimizer step "
+                    f"(maximum absolute difference {max_difference:.6g}); check dropout or "
+                    "generation settings"
+                )
 
-        stats = {
-            "reward": float(mean_reward.detach().item()),
-            "reward_std": float(reward_std.detach().item()),
-            "kl": float(kl_loss.detach().mean().item()),
-            "completion_length": float(token_count.detach().mean().item()),
-        }
-        for index, name in enumerate(self.reward_names):
-            stats[f"rewards/{name}"] = float(rewards_per_func[:, index].mean().detach().item())
-        return loss, stats
+            if self.beta > 0:
+                delta = ref_per_token_logps - per_token_logps
+                per_token_kl = torch.exp(delta) - delta - 1.0
+            else:
+                per_token_kl = torch.zeros_like(per_token_logps)
+
+            mean_reward = rewards.mean()
+            reward_std = rewards.std(unbiased=False)
+            advantages = (rewards - mean_reward) / (reward_std + 1e-4)
+            ratio = torch.exp(per_token_logps - old_per_token_logps.detach())
+            clipped_ratio = ratio.clamp(
+                1.0 - self.clip_epsilon,
+                1.0 + self.clip_epsilon,
+            )
+            advantages = advantages.detach().unsqueeze(1)
+            surrogate = torch.minimum(ratio * advantages, clipped_ratio * advantages)
+            token_count = completion_mask.sum(dim=1).clamp_min(1.0)
+            policy_loss = -(surrogate * completion_mask).sum(dim=1) / token_count
+            kl_loss = (per_token_kl * completion_mask).sum(dim=1) / token_count
+            loss = (policy_loss + self.beta * kl_loss).mean()
+            clip_fraction = (
+                ((ratio - 1.0).abs() > self.clip_epsilon).float() * completion_mask
+            ).sum() / completion_mask.sum().clamp_min(1.0)
+
+            stats = {
+                "reward": float(mean_reward.detach().item()),
+                "reward_std": float(reward_std.detach().item()),
+                "kl": float(kl_loss.detach().mean().item()),
+                "clip_fraction": float(clip_fraction.detach().item()),
+                "completion_length": float(token_count.detach().mean().item()),
+            }
+            for index, name in enumerate(self.reward_names):
+                stats[f"rewards/{name}"] = float(rewards_per_func[:, index].mean().detach().item())
+            return loss, stats
+        finally:
+            model.train(was_training)
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         del num_items_in_batch

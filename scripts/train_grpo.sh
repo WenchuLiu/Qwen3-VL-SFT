@@ -36,6 +36,7 @@ ARGS=(
   --num-generations "${NUM_GENERATIONS:-4}"
   --max-prompt-length "${MAX_PROMPT_LENGTH:-4096}"
   --max-completion-length "${MAX_COMPLETION_LENGTH:-512}"
+  --clip-epsilon "${CLIP_EPSILON:-0.2}"
   --kl-coef "${KL_COEF:-0.04}"
   --iou-threshold "${IOU_THRESHOLD:-0.5}"
   --iou-reward-weight "${IOU_REWARD_WEIGHT:-1.0}"
