@@ -232,8 +232,8 @@ def build_train_records(
     all_selected_queries: bool = False,
 ) -> list[dict]:
     """Build class-balanced, deterministic SFT episodes."""
-    if not shots or any(shot < 1 for shot in shots):
-        raise ValueError("SFT shot counts must be positive")
+    if not shots or any(shot < 0 for shot in shots):
+        raise ValueError("SFT shot counts must be non-negative")
     if not all_selected_queries and (num_samples is None or num_samples < 1):
         raise ValueError("num_samples must be positive")
     largest_shot = max(shots)
@@ -443,4 +443,3 @@ def write_json(path: str | Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False, indent=2)
-

@@ -104,7 +104,7 @@ def build_train(args: argparse.Namespace) -> None:
     )
     records = build_train_records(
         frames,
-        shots=parse_shots(args.shots),
+        shots=parse_shots(args.shots, allow_zero=True),
         num_samples=args.num_samples,
         seed=args.seed,
         all_selected_queries=args.all_selected_queries,

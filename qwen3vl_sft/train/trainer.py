@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import math
 import subprocess
 import time
@@ -361,6 +362,7 @@ class GenerationEvalTrainer(TrainingTelemetryTrainer):
         generation_eval_max_new_tokens: int,
         generation_eval_media_root: str | Path | None = None,
         generation_eval_visual_enhancement: bool = False,
+        generation_eval_output_dir: str | Path | None = None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -389,6 +391,7 @@ class GenerationEvalTrainer(TrainingTelemetryTrainer):
                     "shot": shot,
                     "records": shot_records,
                     "metadata": metadata,
+                    "episodes_path": resolved_path,
                 }
         self.generation_eval_tasks = [
             tasks_by_shot[shot] for shot in sorted(tasks_by_shot)
@@ -399,6 +402,7 @@ class GenerationEvalTrainer(TrainingTelemetryTrainer):
         self.generation_eval_max_pixels = generation_eval_max_pixels
         self.generation_eval_max_new_tokens = generation_eval_max_new_tokens
         self.generation_eval_visual_enhancement = generation_eval_visual_enhancement
+        self.generation_eval_output_dir = generation_eval_output_dir
 
     @staticmethod
     def _distributed() -> bool:
@@ -467,6 +471,26 @@ class GenerationEvalTrainer(TrainingTelemetryTrainer):
                                 "query_annotations"
                             ),
                         )
+                        if getattr(self, "generation_eval_output_dir", None) is not None:
+                            from ..evaluation.coco.generation import result_payload
+
+                            output_dir = Path(self.generation_eval_output_dir)
+                            output_dir.mkdir(parents=True, exist_ok=True)
+                            payload = result_payload(
+                                result,
+                                model_path=str(getattr(model.config, "_name_or_path", "")),
+                                adapter_path=str(Path(self.args.output_dir) / f"checkpoint-{self.state.global_step}"),
+                                episodes_path=task["episodes_path"], device=f"DDP:{world_size}",
+                                batch_size=self.generation_eval_batch_size,
+                                min_pixels=self.generation_eval_min_pixels,
+                                max_pixels=self.generation_eval_max_pixels,
+                                max_new_tokens=self.generation_eval_max_new_tokens,
+                                visual_enhancement=self.generation_eval_visual_enhancement,
+                                coco_annotations_path=task["metadata"].get("query_annotations"),
+                            )
+                            payload.update(global_step=self.state.global_step, epoch=self.state.epoch)
+                            destination = output_dir / f"step-{self.state.global_step}_{shot}shot.json"
+                            destination.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
                         task_payload = {
                             "metrics": trainer_metrics(result),
                             "error": None,

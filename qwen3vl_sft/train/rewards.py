@@ -64,6 +64,8 @@ def _valid_box(values: object) -> tuple[float, float, float, float] | None:
         return None
     if not all(math.isfinite(value) and 0.0 <= value <= 1000.0 for value in box):
         return None
+    x0, y0, x1, y1 = box
+    box = (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
     if box[2] <= box[0] or box[3] <= box[1]:
         return None
     return box
@@ -98,7 +100,7 @@ def parse_reward_detections(text: str) -> list[ScoredDetection]:
     # Accept that safe literal subset before trying strict JSON scanning.
     try:
         literal_candidate = ast.literal_eval(text)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, TypeError):
         literal_candidate = None
     if isinstance(literal_candidate, (list, dict)):
         entries = literal_candidate if isinstance(literal_candidate, list) else [literal_candidate]
@@ -178,7 +180,7 @@ def _parse_boxes_from_text(text: str) -> list[tuple[float, float, float, float]]
     """Parse target boxes even when a legacy solution has no label/score."""
     try:
         literal_candidate = ast.literal_eval(_answer_content(text))
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, TypeError):
         literal_candidate = None
     if isinstance(literal_candidate, (list, dict)):
         entries = literal_candidate if isinstance(literal_candidate, list) else [literal_candidate]
@@ -338,6 +340,89 @@ def _prediction_batch(completions: Sequence[object]) -> list[list[ScoredDetectio
     return [parse_reward_detections(completion_text(completion)) for completion in completions]
 
 
+def _class_matched_iou(
+    prediction: ScoredDetection,
+    target: tuple[float, float, float, float],
+    target_label: str | None,
+    category: str | None,
+) -> float:
+    """Return IoU only when known predicted/target classes are compatible."""
+    predicted_label = prediction.label.strip().casefold() or None
+    target_label = target_label.strip().casefold() if target_label else None
+    category = category.casefold() if category else None
+
+    if category and predicted_label and predicted_label != category:
+        return 0.0
+    if target_label and predicted_label and predicted_label != target_label:
+        return 0.0
+    return compute_iou(prediction.box, target)
+
+
+def box_iou_reward(
+    completions: Sequence[object],
+    target_boxes: object = None,
+    category: object = None,
+    solution: object = None,
+    target_labels: object = None,
+    **kwargs,
+) -> list[float]:
+    """Rex-Omni BoxIoU reward: F1 of class-aware best-IoU precision/recall.
+
+    Each prediction independently receives its best IoU against any same-class
+    target, and each target independently receives its best IoU against any
+    same-class prediction. This intentionally mirrors Rex-Omni's implementation
+    rather than enforcing one-to-one assignment or an IoU threshold.
+    """
+    del kwargs  # Accept legacy iou_threshold without applying it to BoxIoU.
+    if target_boxes is None:
+        target_boxes = solution
+
+    rewards = []
+    for index, predictions in enumerate(_prediction_batch(completions)):
+        targets = _target_for_index(target_boxes, index)
+        sample_category = _category_for_index(category, index)
+        labels = _labels_for_index(target_labels, index)
+        target_best_ious = [0.0] * len(targets)
+        prediction_best_ious = [0.0] * len(predictions)
+
+        if not targets and not predictions:
+            rewards.append(1.0)
+            continue
+
+        for prediction_index, prediction in enumerate(predictions):
+            for target_index, target in enumerate(targets):
+                target_label = labels[target_index] if target_index < len(labels) else None
+                overlap = _class_matched_iou(
+                    prediction,
+                    target,
+                    target_label,
+                    sample_category,
+                )
+                prediction_best_ious[prediction_index] = max(
+                    prediction_best_ious[prediction_index], overlap
+                )
+                target_best_ious[target_index] = max(
+                    target_best_ious[target_index], overlap
+                )
+
+        precision = (
+            sum(prediction_best_ious) / len(prediction_best_ious)
+            if prediction_best_ious
+            else 0.0
+        )
+        recall = (
+            sum(target_best_ious) / len(target_best_ious)
+            if target_best_ious
+            else 0.0
+        )
+        rewards.append(
+            2.0 * precision * recall / (precision + recall)
+            if precision + recall > 0.0
+            else 0.0
+        )
+    return rewards
+
+
 def iou_reward(
     completions: Sequence[object],
     target_boxes: object = None,
@@ -347,30 +432,16 @@ def iou_reward(
     target_labels: object = None,
     **kwargs,
 ) -> list[float]:
-    """Reward correctly localized detections with one-to-one matching."""
-    del kwargs
-    if target_boxes is None:
-        target_boxes = solution
-    if not 0.0 <= iou_threshold <= 1.0:
-        raise ValueError("iou_threshold must be in [0, 1]")
-    rewards = []
-    for index, predictions in enumerate(_prediction_batch(completions)):
-        targets = _target_for_index(target_boxes, index)
-        matches = _match_predictions(
-            predictions,
-            targets,
-            category=_category_for_index(category, index),
-            target_labels=_labels_for_index(target_labels, index),
-            iou_threshold=iou_threshold,
-        )
-        if not targets and not predictions:
-            rewards.append(1.0)
-        else:
-            rewards.append(
-                sum(match[2] for match in matches)
-                / max(len(targets), len(predictions), 1)
-            )
-    return rewards
+    """Backward-compatible alias for the Rex-Omni BoxIoU F1 reward."""
+    del iou_threshold
+    return box_iou_reward(
+        completions=completions,
+        target_boxes=target_boxes,
+        category=category,
+        solution=solution,
+        target_labels=target_labels,
+        **kwargs,
+    )
 
 
 def confidence_reward(
@@ -459,6 +530,7 @@ def accuracy_reward_confidence(completions, solution=None, **kwargs):
 
 
 REWARD_FUNCS_REGISTRY = {
+    "box_iou": box_iou_reward,
     "iou": iou_reward,
     "score": score_reward,
     "confidence": confidence_reward,
@@ -477,6 +549,7 @@ __all__ = [
     "ScoredDetection",
     "accuracy_reward_confidence",
     "accuracy_reward_iou",
+    "box_iou_reward",
     "completion_text",
     "confidence_reward",
     "format_reward",

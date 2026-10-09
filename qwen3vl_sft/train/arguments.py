@@ -7,6 +7,17 @@ from dataclasses import dataclass
 
 DEFAULT_MIN_PIXELS = 28 * 28 * 4
 DEFAULT_MAX_PIXELS = 800 * 800
+DEFAULT_GRPO_COMPLETION_LENGTH = 512
+
+
+def grpo_completion_length(value: str) -> int:
+    try:
+        length = int(value)
+    except (TypeError, ValueError) as error:
+        raise argparse.ArgumentTypeError("expected a positive integer") from error
+    if length < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return length
 
 
 def str_to_bool(value: str | bool) -> bool:
@@ -135,6 +146,8 @@ def build_train_parser() -> argparse.ArgumentParser:
     parser.add_argument("--coco-eval-min-pixels", type=int, default=None)
     parser.add_argument("--coco-eval-max-pixels", type=int, default=None)
     parser.add_argument("--coco-eval-max-new-tokens", type=int, default=1024)
+    parser.add_argument("--coco-eval-output-dir", default=None,
+                        help="Optional directory for per-step generation predictions and metrics.")
     return parser
 
 
@@ -142,13 +155,8 @@ def add_grpo_arguments(parser: argparse.ArgumentParser) -> None:
     """Add rollout and reward arguments for score-aware GRPO training."""
     group = parser.add_argument_group("GRPO rollout and rewards")
     group.add_argument(
-        "--fsdp-mode",
-        choices=("none", "full_shard"),
-        default="none",
-        help=(
-            "Shard model parameters, gradients, and optimizer states across all ranks. "
-            "Launch with at least 2 GPUs; use NPROC_PER_NODE=2 or 4 in train_grpo.sh."
-        ),
+        "--stop-after-step", type=grpo_completion_length, default=None,
+        help="Pause after this optimizer step while retaining the --max-steps scheduler horizon.",
     )
     group.add_argument(
         "--adapter-path",
@@ -158,15 +166,39 @@ def add_grpo_arguments(parser: argparse.ArgumentParser) -> None:
     group.add_argument(
         "--reward-functions",
         nargs="+",
-        default=["iou", "score", "format"],
+        default=["box_iou", "score", "format"],
         help=(
-            "Reward functions to sum. Available values include iou, score, "
+            "Reward functions to sum. box_iou uses the Rex-Omni BoxIoU F1; "
+            "iou is a compatibility alias. Other values include score, "
             "confidence, format, accuracy_iou, and accuracy_confidence."
         ),
     )
-    group.add_argument("--num-generations", type=int, default=4)
+    group.add_argument(
+        "--rollout-n",
+        "--num-generations",
+        dest="num_generations",
+        type=int,
+        default=4,
+        help="Responses sampled per prompt; equivalent to Rex-Omni worker.rollout.n.",
+    )
+    group.add_argument(
+        "--rollout-batch-size",
+        type=grpo_completion_length,
+        default=None,
+        help=(
+            "Global number of prompts in a DDP rollout batch. Per-device batch size "
+            "is derived from the distributed world size."
+        ),
+    )
     group.add_argument("--max-prompt-length", type=int, default=4096)
-    group.add_argument("--max-completion-length", type=int, default=512)
+    group.add_argument(
+        "--max-response-length",
+        "--max-completion-length",
+        dest="max_completion_length",
+        type=grpo_completion_length,
+        default=DEFAULT_GRPO_COMPLETION_LENGTH,
+        help="Maximum response tokens generated per rollout (default: 512).",
+    )
     group.add_argument("--temperature", type=float, default=1.0)
     group.add_argument("--top-p", type=float, default=1.0)
     group.add_argument("--top-k", type=int, default=0)
@@ -182,7 +214,12 @@ def add_grpo_arguments(parser: argparse.ArgumentParser) -> None:
         default=0.04,
         help="KL penalty against the frozen initial policy; set to 0 to disable it.",
     )
-    group.add_argument("--iou-threshold", type=float, default=0.5)
+    group.add_argument(
+        "--iou-threshold",
+        type=float,
+        default=0.5,
+        help="IoU match threshold for the score/confidence reward; BoxIoU F1 has no threshold.",
+    )
     group.add_argument("--iou-reward-weight", type=float, default=1.0)
     group.add_argument("--score-reward-weight", type=float, default=1.0)
     group.add_argument("--format-reward-weight", type=float, default=1.0)
@@ -201,6 +238,9 @@ def build_grpo_parser() -> argparse.ArgumentParser:
     add_data_arguments(parser)
     add_training_arguments(parser)
     add_grpo_arguments(parser)
+    # Keep SFT defaults unchanged while GRPO writes recoverable checkpoints
+    # throughout a long rollout run.
+    parser.set_defaults(save_strategy="steps", save_steps=1000)
     return parser
 
 

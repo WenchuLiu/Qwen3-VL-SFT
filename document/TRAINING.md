@@ -151,33 +151,47 @@ OUTPUT_DIR=outputs/train/grpo/qwen3vl-4b-sft-grpo \
 bash scripts/train_grpo.sh
 ```
 
-For FSDP full sharding across 2 or 4 GPUs, enable it explicitly.
-FSDP shards model parameters, gradients, and optimizer states; each rank still
-processes its own prompt. Keep the image pixel limits unchanged if you need the
-original resolution:
+The GRPO launcher defaults to DDP across all four GPUs on the 3090server. DDP
+keeps one complete model replica on each GPU and synchronizes gradients; it does
+not split model parameters across GPUs. The 4B model and its per-rank activations
+must therefore fit on one 24 GB card. For this Qwen3-VL run, keep image pixel
+limits and prompt/completion lengths sized for that per-GPU memory:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1,2,3 \
 NPROC_PER_NODE=4 \
-FSDP_MODE=full_shard \
 MODEL_NAME_OR_PATH=weights/Qwen3-VL-4B-Instruct \
 ADAPTER_PATH=outputs/train/sft/qwen3vl-4b-r64-2x3090-20260922-235301/checkpoint-2220 \
 DATASET=data/coco/train_sft_10pct_1to2to4_11829_inst-v5.json \
 DATA_ROOT=data \
-OUTPUT_DIR=outputs/train/grpo/qwen3vl-4b-sft-grpo-fsdp4 \
-NUM_GENERATIONS=4 \
+OUTPUT_DIR=outputs/train/grpo/qwen3vl-4b-sft-grpo-ddp4 \
+ROLLOUT_BATCH_SIZE=4 \
+ROLLOUT_N=4 \
 MAX_PROMPT_LENGTH=4096 \
-MAX_COMPLETION_LENGTH=512 \
+MAX_RESPONSE_LENGTH=512 \
 MIN_PIXELS=4096 \
 MAX_PIXELS=640000 \
 bash scripts/train_grpo.sh
 ```
 
+GRPO retains the full prompt for multimodal position handling but projects LM-head
+logits only for response positions. The rollout settings follow Rex-Omni's naming:
+ROLLOUT_BATCH_SIZE is the global number of prompts in one DDP rollout batch;
+with four ranks, a value of 4 gives one prompt per rank. ROLLOUT_N is the number
+of responses sampled per prompt (Rex-Omni worker.rollout.n), and
+MAX_RESPONSE_LENGTH is the generation token budget (default 512). The old
+NUM_GENERATIONS and MAX_COMPLETION_LENGTH environment names remain supported.
+The GRPO launcher saves a Trainer checkpoint every 1000 optimizer steps by
+default; set SAVE_STEPS to change the interval, SAVE_STRATEGY to choose another
+policy, and SAVE_TOTAL_LIMIT to control checkpoint retention.
+PER_DEVICE_TRAIN_BATCH_SIZE can still be set for legacy runs; then the global
+rollout batch is derived as per-device batch size times DDP world size.
+
 For 2 GPUs, set `CUDA_VISIBLE_DEVICES=0,1`, `NPROC_PER_NODE=2`, and use a
-different output directory. FSDP can reduce parameter memory, but it does not
-shard per-prompt image activations or the full-sequence logits; unusually large
-multi-image prompts can still exceed one card's memory. Generation also gathers
-FSDP units repeatedly, so expect it to run more slowly than ordinary DDP.
+different output directory. Each DDP rank still needs enough memory for the
+complete model, generated sequences, image activations, and logits; reducing the
+GPU count does not reduce per-rank model memory. Use `NPROC_PER_NODE=1` only for
+a single-GPU debug run.
 
 `qwen3vl_sft.train.grpo_data` accepts the repository's SFT conversation
 records, COCO episode records with `support`/`query`, and generic records with
@@ -185,11 +199,16 @@ a conversational `prompt`. The final answer is not fed to the model during a
 rollout. Its boxes are attached as reward metadata, while the final prompt is
 rewritten to request `bbox_2d`, `label`, and a confidence `score` in `[0, 1]`.
 
-The default registry is `iou score format`. IoU uses greedy one-to-one
-matching at `--iou-threshold`; the score reward gives matched detections their
-emitted score and unmatched detections `1 - score`. Missing score fields get
-zero score reward. Group advantages are normalized over
-`--num-generations` samples and optimized with a clipped PPO surrogate; adjust
+The default registry is `box_iou score format`. `box_iou` follows Rex-Omni's
+BoxIoU reward: for each prediction and each ground-truth box, find the best
+same-class IoU independently, average those values into precision and recall,
+then return their harmonic mean. It does not apply one-to-one assignment or an
+IoU cutoff; `--iou-threshold` only controls matching in the separate score
+reward. An empty prediction and empty target set receive BoxIoU reward 1.
+The score reward gives matched detections their emitted score and unmatched
+detections `1 - score`; missing score fields get zero score reward. Group
+advantages are normalized over
+`--rollout-n` responses and optimized with a clipped PPO surrogate; adjust
 its interval with `CLIP_EPSILON` (default `0.2`). For LoRA, the KL reference is
 a frozen copy of the starting adapter, so SFT knowledge remains the anchor.
 

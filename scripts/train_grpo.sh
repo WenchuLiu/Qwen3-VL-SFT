@@ -9,18 +9,27 @@ DATASET="${DATASET:?Set DATASET to a JSON/JSONL GRPO file}"
 DATA_ROOT="${DATA_ROOT:-}"
 RUN_ID="${RUN_ID:-qwen3vl-grpo-$(date +%Y%m%d-%H%M%S)}"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/outputs/train/grpo/${RUN_ID}}"
-NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
+NPROC_PER_NODE="${NPROC_PER_NODE:-4}"
 REPORT_TO="${REPORT_TO:-none}"
 RUN_NAME="${RUN_NAME:-$(basename "${OUTPUT_DIR}")}"
-REWARD_FUNCTIONS="${REWARD_FUNCTIONS:-iou score format}"
+REWARD_FUNCTIONS="${REWARD_FUNCTIONS:-box_iou score format}"
 read -r -a REWARD_LIST <<< "${REWARD_FUNCTIONS}"
 
 if [[ "${REPORT_TO}" == *swanlab* && -z "${SWANLAB_API_KEY:-}" ]]; then
   echo "SWANLAB_API_KEY must be set when REPORT_TO includes swanlab" >&2
   exit 1
 fi
+if [[ -n "${FSDP_MODE:-}" && "${FSDP_MODE}" != "none" ]]; then
+  echo "GRPO uses DDP with a full model replica per GPU; FSDP_MODE is unsupported" >&2
+  exit 1
+fi
+if [[ -n "${ROLLOUT_BATCH_SIZE:-}" && -n "${PER_DEVICE_TRAIN_BATCH_SIZE:-}" ]]; then
+  echo "Set either ROLLOUT_BATCH_SIZE or PER_DEVICE_TRAIN_BATCH_SIZE, not both" >&2
+  exit 1
+fi
 
 unset HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 cd "${ROOT_DIR}"
 
 ARGS=(
@@ -29,13 +38,12 @@ ARGS=(
   --output-dir "${OUTPUT_DIR}"
   --run-name "${RUN_NAME}"
   --report-to "${REPORT_TO}"
-  --fsdp-mode "${FSDP_MODE:-none}"
   --eval-mode none
   --eval-strategy no
   --reward-functions "${REWARD_LIST[@]}"
-  --num-generations "${NUM_GENERATIONS:-4}"
+  --rollout-n "${ROLLOUT_N:-${NUM_GENERATIONS:-4}}"
   --max-prompt-length "${MAX_PROMPT_LENGTH:-4096}"
-  --max-completion-length "${MAX_COMPLETION_LENGTH:-512}"
+  --max-response-length "${MAX_RESPONSE_LENGTH:-${MAX_COMPLETION_LENGTH:-512}}"
   --clip-epsilon "${CLIP_EPSILON:-0.2}"
   --kl-coef "${KL_COEF:-0.04}"
   --iou-threshold "${IOU_THRESHOLD:-0.5}"
@@ -48,16 +56,21 @@ ARGS=(
   --attn-implementation "${ATTN_IMPLEMENTATION:-sdpa}"
   --num-train-epochs "${NUM_TRAIN_EPOCHS:-2}"
   --max-steps "${MAX_STEPS:--1}"
-  --per-device-train-batch-size "${PER_DEVICE_TRAIN_BATCH_SIZE:-1}"
   --gradient-accumulation-steps "${GRADIENT_ACCUMULATION_STEPS:-1}"
   --learning-rate "${LEARNING_RATE:-1e-5}"
   --model-max-length "${MODEL_MAX_LENGTH:-8192}"
   --min-pixels "${MIN_PIXELS:-3136}"
   --max-pixels "${MAX_PIXELS:-640000}"
-  --save-strategy "${SAVE_STRATEGY:-epoch}"
+  --save-strategy "${SAVE_STRATEGY:-steps}"
+  --save-steps "${SAVE_STEPS:-1000}"
   --save-total-limit "${SAVE_TOTAL_LIMIT:-2}"
   --logging-steps "${LOGGING_STEPS:-1}"
 )
+if [[ -n "${PER_DEVICE_TRAIN_BATCH_SIZE:-}" ]]; then
+  ARGS+=(--per-device-train-batch-size "${PER_DEVICE_TRAIN_BATCH_SIZE}")
+else
+  ARGS+=(--rollout-batch-size "${ROLLOUT_BATCH_SIZE:-${NPROC_PER_NODE}}")
+fi
 if [[ -n "${REFERENCE_MODEL_NAME_OR_PATH:-}" ]]; then
   ARGS+=(--reference-model-name-or-path "${REFERENCE_MODEL_NAME_OR_PATH}")
 fi

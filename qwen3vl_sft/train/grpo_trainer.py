@@ -9,16 +9,15 @@ RoPE implementation directly.
 from __future__ import annotations
 
 import copy
-import inspect
 import math
+from pathlib import Path
 from collections import defaultdict
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from typing import Any, Callable, Mapping, Sequence
 
 import torch
 from torch.utils.checkpoint import checkpoint
 from transformers import Trainer
-from transformers.generation import GenerationMixin
 from transformers.trainer_callback import TrainerCallback
 
 from ..data.processing import _grid_values, _token_id
@@ -29,61 +28,6 @@ from .rewards import REWARD_FUNCS_REGISTRY
 
 RewardFunc = Callable[..., Sequence[float]]
 _LOGPROB_VOCAB_CHUNK_SIZE = 2048
-
-
-class _FSDPGenerationProxy(GenerationMixin):
-    """Run GenerationMixin decoding through the FSDP-wrapped model forward."""
-
-    # GenerationMixin's cache capability check reads this on ``cls`` rather
-    # than the wrapped model instance. Qwen3-VL is not a stateful architecture.
-    _is_stateful = False
-
-    def __init__(self, fsdp_model, base_model) -> None:
-        self.__dict__["_fsdp_model"] = fsdp_model
-        self.__dict__["_base_model"] = base_model
-        generation_model = (
-            base_model.get_base_model()
-            if callable(getattr(base_model, "get_base_model", None))
-            else base_model
-        )
-
-        def forward_through_fsdp(*args, **kwargs):
-            return fsdp_model(*args, **kwargs)
-
-        # GenerationMixin inspects the forward signature to discover model
-        # inputs. Keep the underlying Qwen signature while dispatching calls
-        # through the FSDP wrapper so each FSDP unit can all-gather as needed.
-        forward_through_fsdp.__signature__ = inspect.signature(generation_model.forward)
-        self.__dict__["forward"] = forward_through_fsdp
-
-    def __getattr__(self, name: str):
-        return getattr(self.__dict__["_base_model"], name)
-
-    def prepare_inputs_for_generation(self, *args, **kwargs):
-        # PEFT delegates this to Qwen3-VL's generation preparation. Ensure the
-        # image/video tensors are used only on the cache prefill pass; some
-        # Transformers/PEFT combinations otherwise keep them on decode steps,
-        # where input_ids contain only newly generated text tokens.
-        model_inputs = self.__dict__["_base_model"].prepare_inputs_for_generation(
-            *args, **kwargs
-        )
-        cache_position = model_inputs.get("cache_position", kwargs.get("cache_position"))
-        is_decode_step = False
-        if cache_position is not None and len(cache_position) > 0:
-            is_decode_step = int(cache_position[0]) != 0
-        if not is_decode_step:
-            past_key_values = model_inputs.get("past_key_values")
-            if hasattr(past_key_values, "get_seq_length"):
-                is_decode_step = int(past_key_values.get_seq_length()) > 0
-            elif isinstance(past_key_values, (tuple, list)) and past_key_values:
-                is_decode_step = past_key_values[0][0].shape[-2] > 0
-        if is_decode_step:
-            model_inputs["pixel_values"] = None
-            model_inputs["pixel_values_videos"] = None
-        return model_inputs
-
-    def __call__(self, *args, **kwargs):
-        return self.__dict__["_fsdp_model"](*args, **kwargs)
 
 
 def _chunked_logsumexp(logits: torch.Tensor) -> torch.Tensor:
@@ -274,7 +218,7 @@ class MultimodalGRPOTrainer(Trainer):
             raise ValueError("num_generations must be at least 2 for group-relative rewards")
         max_completion_length = int(getattr(args, "max_completion_length", 0))
         if max_completion_length < 1:
-            raise ValueError("max_completion_length must be positive")
+            raise ValueError("max_completion_length must be a positive integer")
         temperature = float(getattr(args, "temperature", 1.0))
         if temperature <= 0:
             raise ValueError("temperature must be positive for GRPO sampling")
@@ -380,6 +324,23 @@ class MultimodalGRPOTrainer(Trainer):
                 self.ref_model, evaluation_mode=True
             )
 
+    def _load_from_checkpoint(self, resume_from_checkpoint, model=None):
+        super()._load_from_checkpoint(resume_from_checkpoint, model=model)
+        target = model if model is not None else self.model
+        checkpoint = Path(resume_from_checkpoint)
+        # Transformers 4.57 loads adapter subdirectories instead of the root
+        # adapter when both are present. GRPO saves the policy at the root and
+        # the frozen SFT reference in grpo_reference/, so restore both.
+        if (
+            self.reference_adapter_name is not None
+            and (checkpoint / "adapter_config.json").is_file()
+            and (checkpoint / self.reference_adapter_name / "adapter_config.json").is_file()
+        ):
+            target.load_adapter(
+                str(checkpoint), self.policy_adapter_name, is_trainable=True
+            )
+            target.set_adapter(self.policy_adapter_name)
+
     def _set_signature_columns_if_needed(self):
         # Rollout metadata is deliberately consumed by reward functions rather
         # than by the model's forward signature.
@@ -480,16 +441,9 @@ class MultimodalGRPOTrainer(Trainer):
     def _generate_completions(self, model, prompt_inputs: Mapping[str, object]) -> torch.Tensor:
         """Sample one completion at a time to preserve multimodal alignment."""
         unwrapped_model = self.accelerator.unwrap_model(model)
-        is_fsdp = False
-        try:
-            from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-
-            is_fsdp = isinstance(model, FSDP)
-        except ImportError:
-            pass
-        generation_model = (
-            _FSDPGenerationProxy(model, unwrapped_model) if is_fsdp else unwrapped_model
-        )
+        # DDP generation uses the local replica without gradient synchronization;
+        # policy scoring still goes through the DDP wrapper.
+        generation_model = unwrapped_model
         was_training = model.training
         original_use_cache = getattr(unwrapped_model.config, "use_cache", None)
         if original_use_cache is not None:
@@ -513,10 +467,6 @@ class MultimodalGRPOTrainer(Trainer):
                     top_p=self.top_p,
                     top_k=self.top_k,
                 )
-                if is_fsdp:
-                    # Each rank samples independently, so keep FSDP forward
-                    # collectives aligned when ranks finish at different times.
-                    generation_kwargs["synced_gpus"] = True
                 with torch.inference_mode():
                     generated = generation_model.generate(**generation_kwargs)
                 if hasattr(generated, "sequences"):
@@ -609,21 +559,63 @@ class MultimodalGRPOTrainer(Trainer):
         model_inputs: Mapping[str, object],
         prompt_length: int,
     ) -> torch.Tensor:
+        completion_length = input_ids.shape[-1] - prompt_length
+        if not 0 <= completion_length <= self.max_completion_length:
+            raise ValueError(
+                "completion length must be between 0 and the configured maximum "
+                f"({self.max_completion_length}); got {completion_length}"
+            )
+
         kwargs = self._model_inputs(model_inputs)
         kwargs["input_ids"] = input_ids
         kwargs["attention_mask"] = attention_mask
         kwargs["position_ids"] = self._full_position_ids(input_ids, attention_mask, kwargs)
         kwargs.pop("rope_deltas", None)
-        outputs = model(**kwargs, use_cache=False)
+
+        # The final prompt logit predicts the first completion token. Keep
+        # completion_length + 1 positions, then discard the unused final logit.
+        outputs = model(
+            **kwargs,
+            use_cache=False,
+            logits_to_keep=completion_length + 1,
+        )
         logits = outputs.logits[:, :-1, :]
-        target_ids = input_ids[:, 1:]
+        target_ids = input_ids[:, prompt_length:]
         target_logits = torch.gather(
             logits,
             dim=-1,
             index=target_ids.unsqueeze(-1),
         ).squeeze(-1).float()
-        token_logps = target_logits - _chunked_logsumexp(logits)
-        return token_logps[:, prompt_length - 1 :]
+        return target_logits - _chunked_logsumexp(logits)
+
+    def _disable_accelerate_fp32_output_conversion(self, model) -> None:
+        """Avoid materializing a full FP32 copy of BF16 vocabulary logits.
+
+        Trainer's autocast context still controls the forward dtype. The
+        Accelerate output wrapper otherwise converts the complete selected
+        logits tensor to FP32 before this trainer can reduce it by vocab chunks.
+        """
+        accelerator = getattr(self, "accelerator", None)
+        if accelerator is None:
+            return
+        try:
+            accelerator.unwrap_model(model, keep_fp32_wrapper=False)
+        except TypeError:
+            # Older Accelerate versions do not expose keep_fp32_wrapper.
+            unwrapped_model = accelerator.unwrap_model(model)
+            original_forward = getattr(unwrapped_model, "_original_forward", None)
+            if original_forward is not None:
+                unwrapped_model.forward = original_forward
+                delattr(unwrapped_model, "_original_forward")
+
+    def _grpo_autocast_context(self):
+        """Keep Accelerate mixed precision after removing its output upcast."""
+        accelerator = getattr(self, "accelerator", None)
+        autocast = getattr(accelerator, "autocast", None)
+        if callable(autocast):
+            return autocast()
+        context_factory = getattr(self, "compute_loss_context_manager", None)
+        return context_factory() if callable(context_factory) else nullcontext()
 
     def _compute_rewards(
         self,
@@ -645,10 +637,8 @@ class MultimodalGRPOTrainer(Trainer):
         }
         for reward_index, reward_func in enumerate(self.reward_funcs):
             if self.reward_names[reward_index] in {
-                "iou",
                 "score",
                 "confidence",
-                "accuracy_iou",
                 "accuracy_confidence",
             }:
                 reward_kwargs["iou_threshold"] = self.iou_threshold
@@ -677,6 +667,295 @@ class MultimodalGRPOTrainer(Trainer):
         return raw_rewards, (raw_rewards * weights.unsqueeze(0)).sum(dim=1)
 
     def _sample_loss(
+        self,
+        model,
+        sample: Mapping[str, object],
+        *,
+        backward_callback: Callable[[torch.Tensor], None] | None = None,
+        backward_context: Callable[[bool], Any] | None = None,
+    ) -> tuple[torch.Tensor, dict[str, float]]:
+        """Score a GRPO group, optionally backpropagating one completion at a time.
+
+        Trainer's regular compute_loss path keeps every completion graph alive
+        until the whole group loss is returned. The training path passes a
+        backward callback so each completion graph is released immediately.
+        """
+        if backward_callback is None and backward_context is not None:
+            raise ValueError("backward_context requires backward_callback")
+
+        # Remove Accelerate's automatic full-output upcast. Its autocast context
+        # is restored explicitly around all policy, reference, and rollout forwards.
+        self._disable_accelerate_fp32_output_conversion(model)
+        if self.beta > 0 and self.ref_model is not None:
+            self._disable_accelerate_fp32_output_conversion(self.ref_model)
+
+        if backward_callback is None:
+            with self._grpo_autocast_context():
+                return self._sample_loss_batched(model, sample)
+        if backward_context is None:
+            backward_context = lambda _is_last: nullcontext()
+        return self._sample_loss_streamed(
+            model,
+            sample,
+            backward_callback=backward_callback,
+            backward_context=backward_context,
+        )
+
+    @contextmanager
+    def _gradient_checkpointing_layer_context(self, model):
+        """Enable checkpointed transformer layers while keeping eval semantics.
+
+        GRPO rollout and behavior-policy scoring run in eval mode so dropout is
+        disabled. That also disables Transformers' layer-level checkpointing,
+        which checks each layer's ``training`` flag. During the gradient-bearing
+        policy pass, temporarily enable only checkpointable layers; their child
+        dropout modules and the rest of the model remain in eval mode.
+        """
+        changed = []
+        for module in model.modules():
+            checkpoint_fn = getattr(module, "_gradient_checkpointing_func", None)
+            if getattr(module, "gradient_checkpointing", False) and callable(checkpoint_fn):
+                changed.append((module, module.training))
+                module.training = True
+        try:
+            yield
+        finally:
+            for module, was_training in changed:
+                module.training = was_training
+
+    def _sample_loss_streamed(
+        self,
+        model,
+        sample: Mapping[str, object],
+        *,
+        backward_callback: Callable[[torch.Tensor], None],
+        backward_context: Callable[[bool], Any],
+    ) -> tuple[torch.Tensor, dict[str, float]]:
+        """Backpropagate each completion before constructing the next graph."""
+        was_training = model.training
+        model.eval()
+        try:
+            prompt_inputs = self._render_prompt(sample)
+            prompt_ids = prompt_inputs["input_ids"]
+            prompt_mask = prompt_inputs["attention_mask"]
+            prompt_length = prompt_ids.shape[-1]
+            with self._grpo_autocast_context():
+                generated = self._generate_completions(model, prompt_inputs)
+            completion_ids = generated[:, prompt_length:]
+            if completion_ids.shape[-1] < 1:
+                raise RuntimeError("generation returned an empty completion")
+            completion_mask = self._completion_mask(completion_ids)
+
+            texts = self.processor.batch_decode(
+                completion_ids,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )
+            completions = [[{"role": "assistant", "content": text}] for text in texts]
+            prompts = [sample["prompt"]] * self.num_generations
+            rewards_per_func, rewards = self._compute_rewards(sample, prompts, completions)
+
+            mean_reward = rewards.mean()
+            reward_std = rewards.std(unbiased=False)
+            advantages = ((rewards - mean_reward) / (reward_std + 1e-4)).detach()
+
+            # Keep only token IDs and masks for each candidate. The multimodal
+            # prompt (especially pixel_values) is reused as-is on each forward,
+            # rather than concatenated num_generations times.
+            candidate_batches = []
+            for index in range(self.num_generations):
+                valid_length = int(completion_mask[index].sum().item())
+                # Preserve a graph-connected, all-masked token for a degenerate
+                # empty completion so every DDP rank still participates.
+                candidate_length = max(valid_length, 1)
+                candidate_completion = completion_ids[
+                    index : index + 1, :candidate_length
+                ]
+                candidate_mask = completion_mask[index : index + 1, :candidate_length]
+                candidate_input_ids = torch.cat(
+                    [prompt_ids, candidate_completion],
+                    dim=1,
+                )
+                candidate_attention_mask = torch.cat(
+                    [prompt_mask, candidate_mask.long()],
+                    dim=1,
+                )
+                candidate_batches.append(
+                    (candidate_input_ids, candidate_attention_mask, candidate_mask)
+                )
+
+            # These detached log-probabilities are small [1, completion_length]
+            # tensors. Compute them serially before any current-policy graph is
+            # built, matching the rollout policy and reference semantics.
+            old_per_token_logps = []
+            with torch.no_grad():
+                for candidate_input_ids, candidate_attention_mask, _ in candidate_batches:
+                    with self._grpo_autocast_context():
+                        old_logps = self._get_per_token_logps(
+                            model,
+                            candidate_input_ids,
+                            candidate_attention_mask,
+                            prompt_inputs,
+                            prompt_length,
+                        )
+                    old_per_token_logps.append(old_logps.detach())
+
+            ref_per_token_logps = None
+            if self.beta > 0:
+                reference_model = self.ref_model
+                adapter_context = nullcontext()
+                switched_reference_adapter = False
+                base_model = None
+                if reference_model is None:
+                    base_model = self.accelerator.unwrap_model(model)
+                    reference_model = model
+                    if self.reference_adapter_name is not None:
+                        base_model.set_adapter(self.reference_adapter_name)
+                        switched_reference_adapter = True
+                    else:
+                        adapter_context = (
+                            base_model.disable_adapter()
+                            if hasattr(base_model, "disable_adapter")
+                            else nullcontext()
+                        )
+                ref_per_token_logps = []
+                try:
+                    with adapter_context:
+                        with torch.no_grad():
+                            for (
+                                candidate_input_ids,
+                                candidate_attention_mask,
+                                _,
+                            ) in candidate_batches:
+                                with self._grpo_autocast_context():
+                                    ref_logps = self._get_per_token_logps(
+                                        reference_model,
+                                        candidate_input_ids,
+                                        candidate_attention_mask,
+                                        prompt_inputs,
+                                        prompt_length,
+                                    )
+                                ref_per_token_logps.append(ref_logps.detach())
+                finally:
+                    if switched_reference_adapter:
+                        base_model.set_adapter(self.policy_adapter_name)
+
+            loss_total = torch.zeros((), device=rewards.device, dtype=torch.float32)
+            kl_total = torch.zeros_like(loss_total)
+            clipped_token_total = torch.zeros_like(loss_total)
+            valid_token_total = torch.zeros_like(loss_total)
+            completion_length_total = torch.zeros_like(loss_total)
+
+            with self._gradient_checkpointing_layer_context(model):
+                for index, (
+                    candidate_input_ids,
+                    candidate_attention_mask,
+                    candidate_mask,
+                ) in enumerate(candidate_batches):
+                    old_logps = old_per_token_logps[index]
+                    valid_tokens = candidate_mask.bool()
+
+                    # DDP requires no_sync to enclose both forward and backward.
+                    # The training_step callback selects the one final completion
+                    # in the local microbatch that synchronizes accumulated grads.
+                    with backward_context(index == self.num_generations - 1):
+                        with self._grpo_autocast_context():
+                            per_token_logps = self._get_per_token_logps(
+                                model,
+                                candidate_input_ids,
+                                candidate_attention_mask,
+                                prompt_inputs,
+                                prompt_length,
+                            )
+                            if valid_tokens.any() and not torch.allclose(
+                                per_token_logps.detach()[valid_tokens],
+                                old_logps[valid_tokens],
+                                atol=0.02,
+                                rtol=0.002,
+                            ):
+                                max_difference = (
+                                    per_token_logps.detach()[valid_tokens]
+                                    - old_logps[valid_tokens]
+                                ).abs().max().item()
+                                raise RuntimeError(
+                                    "rollout and policy log-probabilities diverged before the "
+                                    "optimizer step (maximum absolute difference "
+                                    f"{max_difference:.6g}); check dropout or generation settings"
+                                )
+
+                            if self.beta > 0:
+                                ref_logps = ref_per_token_logps[index]
+                                delta = ref_logps - per_token_logps
+                                per_token_kl = torch.exp(delta) - delta - 1.0
+                            else:
+                                per_token_kl = torch.zeros_like(per_token_logps)
+
+                            ratio = torch.exp(per_token_logps - old_logps)
+                            clipped_ratio = ratio.clamp(
+                                1.0 - self.clip_epsilon,
+                                1.0 + self.clip_epsilon,
+                            )
+                            token_count = candidate_mask.sum(dim=1).clamp_min(1.0)
+                            advantage = advantages[index].view(1, 1)
+                            surrogate = torch.minimum(
+                                ratio * advantage,
+                                clipped_ratio * advantage,
+                            )
+                            policy_loss = -(
+                                surrogate * candidate_mask
+                            ).sum(dim=1) / token_count
+                            kl_loss = (
+                                per_token_kl * candidate_mask
+                            ).sum(dim=1) / token_count
+                            candidate_loss = (policy_loss + self.beta * kl_loss).mean()
+
+                        # Divide by group size here; training_step applies the
+                        # prompt-batch and gradient-accumulation scaling.
+                        backward_callback(candidate_loss / self.num_generations)
+
+                    loss_total += candidate_loss.detach() / self.num_generations
+                    kl_total += kl_loss.detach().mean() / self.num_generations
+                    clipped_token_total += (
+                        ((ratio.detach() - 1.0).abs() > self.clip_epsilon).float()
+                        * candidate_mask
+                    ).sum()
+                    valid_token_total += candidate_mask.sum()
+                    completion_length_total += token_count.detach().sum()
+
+                    # Do not retain a current-policy graph or LM-head output while
+                    # scoring the next completion.
+                    del (
+                        per_token_logps,
+                        per_token_kl,
+                        ratio,
+                        clipped_ratio,
+                        surrogate,
+                        policy_loss,
+                        kl_loss,
+                        candidate_loss,
+                        token_count,
+                    )
+
+            stats = {
+                "reward": float(mean_reward.detach().item()),
+                "reward_std": float(reward_std.detach().item()),
+                "kl": float(kl_total.detach().item()),
+                "clip_fraction": float(
+                    (clipped_token_total / valid_token_total.clamp_min(1.0)).item()
+                ),
+                "completion_length": float(
+                    (completion_length_total / self.num_generations).item()
+                ),
+            }
+            for index, name in enumerate(self.reward_names):
+                stats[f"rewards/{name}"] = float(
+                    rewards_per_func[:, index].mean().detach().item()
+                )
+            return loss_total.detach(), stats
+        finally:
+            model.train(was_training)
+
+    def _sample_loss_batched(
         self, model, sample: Mapping[str, object]
     ) -> tuple[torch.Tensor, dict[str, float]]:
         was_training = model.training
@@ -823,6 +1102,61 @@ class MultimodalGRPOTrainer(Trainer):
             return loss, stats
         finally:
             model.train(was_training)
+
+    def training_step(self, model, inputs, num_items_in_batch=None):
+        """Stream completion graphs and accumulate their gradients immediately."""
+        del num_items_in_batch
+        model.train()
+        optimizer = getattr(self, "optimizer", None)
+        if hasattr(optimizer, "train") and callable(optimizer.train):
+            optimizer.train()
+        inputs = self._prepare_inputs(inputs)
+        if isinstance(inputs, Mapping):
+            samples = [inputs]
+        elif isinstance(inputs, Sequence) and inputs:
+            samples = list(inputs)
+        else:
+            raise ValueError("GRPO received an empty batch")
+
+        gradient_accumulation_steps = int(
+            getattr(
+                self,
+                "current_gradient_accumulation_steps",
+                getattr(self.args, "gradient_accumulation_steps", 1),
+            )
+        )
+        if gradient_accumulation_steps < 1:
+            raise ValueError("gradient accumulation steps must be positive")
+
+        batch_stats = defaultdict(list)
+        detached_losses = []
+        for sample_index, sample in enumerate(samples):
+            is_last_sample = sample_index == len(samples) - 1
+
+            def backward_callback(candidate_loss):
+                self.accelerator.backward(
+                    candidate_loss / (len(samples) * gradient_accumulation_steps)
+                )
+
+            def backward_context(is_last_candidate):
+                if is_last_sample and is_last_candidate:
+                    return nullcontext()
+                no_sync = getattr(model, "no_sync", None)
+                return no_sync() if callable(no_sync) else nullcontext()
+
+            sample_loss, stats = self._sample_loss(
+                model,
+                sample,
+                backward_callback=backward_callback,
+                backward_context=backward_context,
+            )
+            detached_losses.append(sample_loss.detach())
+            for key, value in stats.items():
+                batch_stats[key].append(value)
+
+        for key, values in batch_stats.items():
+            self._metrics[key].append(sum(values) / len(values))
+        return torch.stack(detached_losses).mean()
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         del num_items_in_batch

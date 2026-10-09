@@ -16,7 +16,11 @@ from torch.utils.data import Dataset
 from ..data.messages import build_messages
 from ..data.paths import resolve_media_path
 from ..data.processing import configure_processor_pixels
-from ..evaluation.coco.protocol import build_eval_messages, build_question
+from ..evaluation.coco.protocol import (
+    ZERO_SHOT_EVAL_SYSTEM_PROMPT,
+    build_eval_messages,
+    build_question,
+)
 from .dataset import load_records
 from .rewards import parse_target_boxes
 
@@ -105,10 +109,11 @@ def _score_prompt_from_sft_record(
         raise ValueError("GRPO SFT records must end with a user prompt before the target answer")
 
     category = record.get("category")
+    zero_shot = record.get("num_shots") == 0
     if isinstance(category, str) and category.strip():
         score_question = build_question(
             category,
-            query=True,
+            query=not zero_shot,
             include_confidence=True,
         )
     else:
@@ -117,6 +122,11 @@ def _score_prompt_from_sft_record(
             "field between 0.0 and 1.0, ordered by descending score."
         )
 
+    if zero_shot and messages[0].get("role") == "system":
+        messages[0] = {
+            "role": "system",
+            "content": [{"type": "text", "text": ZERO_SHOT_EVAL_SYSTEM_PROMPT}],
+        }
     final_user = dict(messages[-1])
     content = final_user.get("content")
     if isinstance(content, list):

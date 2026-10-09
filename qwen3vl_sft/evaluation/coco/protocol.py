@@ -54,6 +54,13 @@ ZERO_SHOT_EVAL_SYSTEM_PROMPT = (
     "when no requested object is present."
 )
 
+ZERO_SHOT_TRAIN_SYSTEM_PROMPT = (
+    "You are an object detection assistant. "
+    "Detect the requested category in the image. "
+    "Output only the requested JSON list, using 0-1000 normalized coordinates; "
+    "output [] when no requested object is present."
+)
+
 
 def build_question(
     category: str,
@@ -333,14 +340,17 @@ def build_sft_record(
     if not frames:
         raise ValueError("an SFT episode must contain a query frame")
 
-    conversations = [{"from": "system", "value": TRAIN_SYSTEM_PROMPT}]
+    conversations = [{
+        "from": "system",
+        "value": TRAIN_SYSTEM_PROMPT if support else ZERO_SHOT_TRAIN_SYSTEM_PROMPT,
+    }]
     for index, frame in enumerate(frames):
         is_query = index == len(frames) - 1
         conversations.extend(
             [
                 {
                     "from": "human",
-                    "value": f"<image>\n{build_question(category, query=is_query)}",
+                    "value": f"<image>\n{build_question(category, query=is_query and bool(support))}",
                 },
                 {"from": "gpt", "value": format_answer(category, _frame_boxes(frame))},
             ]

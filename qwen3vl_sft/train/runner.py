@@ -235,6 +235,7 @@ def train(args) -> None:
             generation_eval_visual_enhancement=getattr(
                 args, "visual_enhancement", False
             ),
+            generation_eval_output_dir=args.coco_eval_output_dir,
             swanlab_enabled=swanlab_enabled,
         )
     else:
