@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import csv
 import fcntl
+import gzip
 import hashlib
 import json
 import os
@@ -26,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MODEL = ROOT / "weights" / "Qwen3-VL-4B-Instruct"
 TRAIN_MANIFEST = ROOT / "data" / "coco" / "train_sft_10pct_1to2to4_11829_inst-v5.json"
 COCO_MANIFEST_ROOT = ROOT / "data" / "coco"
-CROSS_MANIFEST_ROOT = ROOT / "outputs" / "eval" / "fewshot" / "4b-sft-epoch4-6CD_dataset"
+CROSS_MANIFEST_ROOT = ROOT / "assets" / "evaluation_manifests" / "icl_grpo_inst_v5_cross_domain"
 DATASETS = ("ArTaxOr", "Clipart1k", "FISH", "NEU-DET", "UODD")
 SHOTS = (0, 1, 2, 4)
 COCO_MANIFESTS = {
@@ -47,7 +48,27 @@ def sha256_file(path: Path) -> str:
 
 
 def read_json(path: Path) -> dict:
+    if path.suffix == ".gz":
+        with gzip.open(path, "rt", encoding="utf-8") as handle:
+            return json.load(handle)
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _manifest_content_sha256(path: Path) -> str:
+    content = gzip.decompress(path.read_bytes()) if path.suffix == ".gz" else path.read_bytes()
+    return hashlib.sha256(content).hexdigest()
+
+
+def _cross_domain_manifest_path(root: Path, dataset: str, shot: int) -> Path:
+    plain = root / dataset / f"{shot}shot" / "episodes.json"
+    if plain.is_file():
+        return plain
+    compressed = Path(f"{plain}.gz")
+    if compressed.is_file():
+        return compressed
+    raise FileNotFoundError(
+        f"fixed cross-domain manifest not found: expected {plain} or {compressed}"
+    )
 
 
 def write_json(path: Path, value: object) -> None:
@@ -127,13 +148,15 @@ def _validate_fixed_eval_manifests(coco_root: Path, cross_root: Path) -> dict:
 
     for dataset in DATASETS:
         for shot in SHOTS:
-            source = cross_root / dataset / f"{shot}shot" / "episodes.json"
-            if not source.is_file():
-                raise FileNotFoundError(f"fixed cross-domain manifest not found: {source}")
+            source = _cross_domain_manifest_path(cross_root, dataset, shot)
             payload = read_json(source)
             records = payload.get("records", [])
             if payload.get("prompt_template_version") != "inst-v5" or not records:
                 raise ValueError(f"invalid cross-domain manifest: {source}")
+            expected_hashes = config.get("manifest_sha256_uncompressed", {})
+            expected_hash = expected_hashes.get(f"{dataset}/{shot}shot")
+            if expected_hash and _manifest_content_sha256(source) != expected_hash:
+                raise ValueError(f"fixed manifest content hash does not match config: {source}")
             support_histogram: dict[str, int] = {}
             for record in records:
                 support_count = len(record.get("support", []))
@@ -143,6 +166,8 @@ def _validate_fixed_eval_manifests(coco_root: Path, cross_root: Path) -> dict:
             entries[f"{dataset}/{shot}shot"] = {
                 "source": str(source.resolve()),
                 "sha256": sha256_file(source),
+                "content_sha256": _manifest_content_sha256(source),
+                "compression": "gzip" if source.suffix == ".gz" else None,
                 "episodes": len(records),
                 "shot": shot,
                 "support_count_histogram": support_histogram,
@@ -277,7 +302,7 @@ def _prepare_snapshots(run_dir: Path, train_source: Path, coco_root: Path, cross
             copy_manifest(source, target, max_records=smoke_records if smoke else None)
     for dataset in DATASETS:
         for shot in SHOTS:
-            source = cross_root / dataset / f"{shot}shot" / "episodes.json"
+            source = _cross_domain_manifest_path(cross_root, dataset, shot)
             target = cross_snapshot_root / dataset / f"{shot}shot" / "episodes.json"
             if not target.is_file():
                 copy_manifest(source, target, max_records=smoke_records if smoke else None)

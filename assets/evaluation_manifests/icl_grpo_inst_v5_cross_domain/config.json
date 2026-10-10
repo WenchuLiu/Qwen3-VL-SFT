@@ -1,0 +1,46 @@
+{
+  "manifest_set_id": "4b-sft-epoch4-6CD_dataset",
+  "provenance": "Exact episodes.json payloads copied from the existing fixed few-shot evaluation run; gzip is transport compression only.",
+  "datasets": [
+    "ArTaxOr",
+    "Clipart1k",
+    "FISH",
+    "NEU-DET",
+    "UODD"
+  ],
+  "shots": [
+    0,
+    1,
+    2,
+    4
+  ],
+  "seed": 43,
+  "prompt_template_version": "inst-v5",
+  "prompt_method": "baseline",
+  "all_query_pairs": true,
+  "visual_enhancement": false,
+  "instruction_enhancement": false,
+  "detpo": false,
+  "manifest_sha256_uncompressed": {
+    "ArTaxOr/0shot": "f3edd70eb4366550d62c184e66a23072dffcf71a322f413309dec797990ecb91",
+    "ArTaxOr/1shot": "1e7e95a87c1438808f4a5c992b60b2808e2f0e8666afdc0e691d2bdd71e14bf1",
+    "ArTaxOr/2shot": "2b182cd24691420d6c3358afd7a27add15e69c43df96683fa5d53efe8bfb899f",
+    "ArTaxOr/4shot": "40770d082b25d01cbb9012251cbb6d3db3cf931ab3f0689e1cb0f2f8e32b933e",
+    "Clipart1k/0shot": "dd820267fa2a003cf527e554f22bf2a7e5ee021f02afd19aa00b6f37b872adf8",
+    "Clipart1k/1shot": "e11b445ee9b1d3b58354d0862437896491704c3b16bb6cd865ec43deeb6ca3de",
+    "Clipart1k/2shot": "46b29b4d1ef6f30fbfe47f72c8f2f435c2bf9ebee7fa2c93520e39e1ff8de67b",
+    "Clipart1k/4shot": "46f1f80243fb9ddd38131ae4997ea71debc26e051fe2e34dfd8314deaf161d56",
+    "FISH/0shot": "d9ff64dbd0c1bb03a536e0ef37ec507efe219ba4045de877a5c83e84fb81bb64",
+    "FISH/1shot": "0447c811cab4d0fe86f0ea76e0f897c32bf13bf45ff2f4ceea98a09f5003ea76",
+    "FISH/2shot": "a6abe717cca71a5f81acf885b926b9b155207d2085091f321b4c3fabf6bf3ee1",
+    "FISH/4shot": "5389803a2a2346ebbe2eb9d4c5bd5acc65b54e6da57a0c5e45dbff4e2f6c1d80",
+    "NEU-DET/0shot": "1fe9ef36c81f0ecd43a368d865d783d85f4b931991cbccf0a895d14eccb85562",
+    "NEU-DET/1shot": "356956b4e35dcf218aa263caa28763b4c930b2614b4caea4eb97fd0d57b22778",
+    "NEU-DET/2shot": "79b7ff9add7a0395627384ca7ec07f8dcb5a7413a48d9a7d5522ffabfd5cf051",
+    "NEU-DET/4shot": "a3d5b7199a2ea412b95d1f02af17eabc4976d917127cc4f6bf5498c55bb5b5c5",
+    "UODD/0shot": "5b65b4bd8881a9fd2568895aa8343ded62f9bddf182b312a52ef5214f287313e",
+    "UODD/1shot": "6aff1ce30570ee29a04a513b88ec302040f13776194769a15c0433c39e2d3e7a",
+    "UODD/2shot": "e24bf6f20aa62f0f2c30d7a43ae8812be062806246a6d5fd979770172dd82a08",
+    "UODD/4shot": "a2abdc5de731b63f1cfcee3a61e30924204eede2456b25ec35e0365b9561b4ba"
+  }
+}
