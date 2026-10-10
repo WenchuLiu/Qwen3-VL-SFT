@@ -168,13 +168,19 @@ def _reference_model(args):
         return None
     from transformers import AutoModelForImageTextToText
 
+    reference_path = Path(args.reference_model_name_or_path).expanduser()
+    is_local_model = reference_path.is_dir()
+    model_reference = (
+        str(reference_path.resolve()) if is_local_model else args.reference_model_name_or_path
+    )
     dtype = torch.bfloat16 if args.bf16 else (torch.float16 if args.fp16 else None)
     reference = AutoModelForImageTextToText.from_pretrained(
-        args.reference_model_name_or_path,
+        model_reference,
         cache_dir=args.cache_dir,
         dtype=dtype,
         attn_implementation=args.attn_implementation,
         trust_remote_code=True,
+        local_files_only=is_local_model,
     )
     reference.config.use_cache = False
     return reference

@@ -18,6 +18,8 @@ def load_model_and_processor(args):
 
     adapter_path = getattr(args, "adapter_path", None)
     base_path = Path(args.model_name_or_path).expanduser()
+    is_local_model = base_path.is_dir()
+    model_reference = str(base_path.resolve()) if is_local_model else args.model_name_or_path
     adapter_reference = adapter_path
     if adapter_path and not args.lora_enable:
         raise ValueError("--adapter-path requires --lora-enable true")
@@ -42,11 +44,12 @@ def load_model_and_processor(args):
 
     dtype = torch.bfloat16 if args.bf16 else (torch.float16 if args.fp16 else None)
     model = AutoModelForImageTextToText.from_pretrained(
-        args.model_name_or_path,
+        model_reference,
         cache_dir=args.cache_dir,
         dtype=dtype,
         attn_implementation=args.attn_implementation,
         trust_remote_code=True,
+        local_files_only=is_local_model,
     )
     if adapter_reference:
         from peft import PeftModel
@@ -57,9 +60,10 @@ def load_model_and_processor(args):
             is_trainable=True,
         )
     processor = AutoProcessor.from_pretrained(
-        args.model_name_or_path,
+        model_reference,
         cache_dir=args.cache_dir,
         trust_remote_code=True,
+        local_files_only=is_local_model,
     )
     processor.tokenizer.model_max_length = args.model_max_length
     processor.tokenizer.padding_side = "right"
