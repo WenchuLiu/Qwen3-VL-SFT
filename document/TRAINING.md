@@ -186,6 +186,21 @@ loaders. The model and processor loaders also use `local_files_only` for local
 directories, so they do not query the Hub. It exits before dataset construction
 if the local model path is missing; it does not download the checkpoint.
 
+GRPO checkpoints are saved every 500 optimizer steps by default, with no
+retention limit. To resume, point `RESUME_FROM_CHECKPOINT` at a saved
+`checkpoint-*` directory and reuse the same `OUTPUT_DIR`:
+
+```bash
+MODEL_NAME_OR_PATH=weights/Qwen3-VL-4B-Instruct \
+OUTPUT_DIR=outputs/train/grpo/your-original-run \
+RESUME_FROM_CHECKPOINT=outputs/train/grpo/your-original-run/checkpoint-500 \
+BUILD_DATASET=false \
+bash scripts/train_flexible_coco_grpo_4b.sh
+```
+
+Set `SAVE_TOTAL_LIMIT` explicitly only if you want to limit the number of
+retained checkpoints.
+
 If the episode JSON already exists, skip rebuilding it with
 `BUILD_DATASET=false DATASET=/path/to/train_episodes.json`. The launcher defaults
 to the local checkpoint at `weights/Qwen3-VL-4B-Instruct`.
@@ -244,9 +259,10 @@ with four ranks, a value of 4 gives one prompt per rank. ROLLOUT_N is the number
 of responses sampled per prompt (Rex-Omni worker.rollout.n), and
 MAX_RESPONSE_LENGTH is the generation token budget (default 512). The old
 NUM_GENERATIONS and MAX_COMPLETION_LENGTH environment names remain supported.
-The GRPO launcher saves a Trainer checkpoint every 1000 optimizer steps by
-default; set SAVE_STEPS to change the interval, SAVE_STRATEGY to choose another
-policy, and SAVE_TOTAL_LIMIT to control checkpoint retention.
+The GRPO launcher saves a Trainer checkpoint every 500 optimizer steps by
+default and keeps all checkpoints. Set SAVE_STEPS to change the interval,
+SAVE_STRATEGY to choose another policy, or SAVE_TOTAL_LIMIT to impose a retention
+limit.
 PER_DEVICE_TRAIN_BATCH_SIZE can still be set for legacy runs; then the global
 rollout batch is derived as per-device batch size times DDP world size.
 

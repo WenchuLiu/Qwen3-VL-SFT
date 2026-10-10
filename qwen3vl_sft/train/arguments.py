@@ -238,9 +238,9 @@ def build_grpo_parser() -> argparse.ArgumentParser:
     add_data_arguments(parser)
     add_training_arguments(parser)
     add_grpo_arguments(parser)
-    # Keep SFT defaults unchanged while GRPO writes recoverable checkpoints
-    # throughout a long rollout run.
-    parser.set_defaults(save_strategy="steps", save_steps=1000)
+    # Keep SFT defaults unchanged while GRPO saves frequent, unlimited
+    # recoverable checkpoints throughout long rollout runs.
+    parser.set_defaults(save_strategy="steps", save_steps=500, save_total_limit=None)
     return parser
 
 

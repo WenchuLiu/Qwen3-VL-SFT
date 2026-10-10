@@ -62,10 +62,12 @@ ARGS=(
   --min-pixels "${MIN_PIXELS:-3136}"
   --max-pixels "${MAX_PIXELS:-640000}"
   --save-strategy "${SAVE_STRATEGY:-steps}"
-  --save-steps "${SAVE_STEPS:-1000}"
-  --save-total-limit "${SAVE_TOTAL_LIMIT:-2}"
+  --save-steps "${SAVE_STEPS:-500}"
   --logging-steps "${LOGGING_STEPS:-1}"
 )
+if [[ -n "${SAVE_TOTAL_LIMIT:-}" ]]; then
+  ARGS+=(--save-total-limit "${SAVE_TOTAL_LIMIT}")
+fi
 if [[ -n "${PER_DEVICE_TRAIN_BATCH_SIZE:-}" ]]; then
   ARGS+=(--per-device-train-batch-size "${PER_DEVICE_TRAIN_BATCH_SIZE}")
 else

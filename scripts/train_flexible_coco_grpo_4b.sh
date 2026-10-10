@@ -67,7 +67,6 @@ esac
 # Do not inherit an SFT adapter or an external frozen reference model.
 ADAPTER_PATH="" \
 REFERENCE_MODEL_NAME_OR_PATH="" \
-RESUME_FROM_CHECKPOINT="" \
 LORA_ENABLE=true \
 MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH}" \
 DATASET="${DATASET}" \
