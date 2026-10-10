@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import csv
 import fcntl
-import gzip
 import hashlib
 import json
 import os
@@ -27,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MODEL = ROOT / "weights" / "Qwen3-VL-4B-Instruct"
 TRAIN_MANIFEST = ROOT / "data" / "coco" / "train_sft_10pct_1to2to4_11829_inst-v5.json"
 COCO_MANIFEST_ROOT = ROOT / "data" / "coco"
-CROSS_MANIFEST_ROOT = ROOT / "assets" / "evaluation_manifests" / "icl_grpo_inst_v5_cross_domain"
+CROSS_DATA_ROOT = ROOT / "data"
 DATASETS = ("ArTaxOr", "Clipart1k", "FISH", "NEU-DET", "UODD")
 SHOTS = (0, 1, 2, 4)
 COCO_MANIFESTS = {
@@ -48,27 +47,7 @@ def sha256_file(path: Path) -> str:
 
 
 def read_json(path: Path) -> dict:
-    if path.suffix == ".gz":
-        with gzip.open(path, "rt", encoding="utf-8") as handle:
-            return json.load(handle)
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _manifest_content_sha256(path: Path) -> str:
-    content = gzip.decompress(path.read_bytes()) if path.suffix == ".gz" else path.read_bytes()
-    return hashlib.sha256(content).hexdigest()
-
-
-def _cross_domain_manifest_path(root: Path, dataset: str, shot: int) -> Path:
-    plain = root / dataset / f"{shot}shot" / "episodes.json"
-    if plain.is_file():
-        return plain
-    compressed = Path(f"{plain}.gz")
-    if compressed.is_file():
-        return compressed
-    raise FileNotFoundError(
-        f"fixed cross-domain manifest not found: expected {plain} or {compressed}"
-    )
 
 
 def write_json(path: Path, value: object) -> None:
@@ -148,14 +127,16 @@ def _validate_fixed_eval_manifests(coco_root: Path, cross_root: Path) -> dict:
 
     for dataset in DATASETS:
         for shot in SHOTS:
-            source = _cross_domain_manifest_path(cross_root, dataset, shot)
+            source = cross_root / dataset / f"{shot}shot" / "episodes.json"
+            if not source.is_file():
+                raise FileNotFoundError(f"generated fixed manifest not found: {source}")
             payload = read_json(source)
             records = payload.get("records", [])
             if payload.get("prompt_template_version") != "inst-v5" or not records:
                 raise ValueError(f"invalid cross-domain manifest: {source}")
             expected_hashes = config.get("manifest_sha256_uncompressed", {})
             expected_hash = expected_hashes.get(f"{dataset}/{shot}shot")
-            if expected_hash and _manifest_content_sha256(source) != expected_hash:
+            if expected_hash and sha256_file(source) != expected_hash:
                 raise ValueError(f"fixed manifest content hash does not match config: {source}")
             support_histogram: dict[str, int] = {}
             for record in records:
@@ -166,13 +147,107 @@ def _validate_fixed_eval_manifests(coco_root: Path, cross_root: Path) -> dict:
             entries[f"{dataset}/{shot}shot"] = {
                 "source": str(source.resolve()),
                 "sha256": sha256_file(source),
-                "content_sha256": _manifest_content_sha256(source),
-                "compression": "gzip" if source.suffix == ".gz" else None,
                 "episodes": len(records),
                 "shot": shot,
                 "support_count_histogram": support_histogram,
             }
     return {"source_config": str(source_config.resolve()), "entries": entries}
+
+
+def _build_cross_domain_manifests(
+    data_root: Path,
+    output_root: Path,
+    *,
+    smoke: bool,
+    smoke_records: int,
+) -> None:
+    """Create the same deterministic fixed episodes used by the few-shot baseline.
+
+    The data tree contains the support/test annotations and images.  Calling
+    the existing few-shot manifest builder with its original settings
+    (seed=43, inst-v5, all query pairs) reproduces the committed experiment's
+    query/support records without requiring a separately generated manifest
+    directory.
+    """
+    from qwen3vl_sft.evaluation.fewshot.cli import _build_manifest
+    from qwen3vl_sft.evaluation.fewshot.config import _dataset_dir
+
+    data_root = data_root.expanduser().resolve()
+    output_root.mkdir(parents=True, exist_ok=True)
+    config_path = output_root / "config.json"
+    expected_subset = smoke_records if smoke else None
+    existing = None
+    if config_path.is_file():
+        existing = read_json(config_path)
+        if existing.get("smoke_subset_records") != expected_subset:
+            raise ValueError(
+                "cross-domain manifests in this run directory were created with "
+                "different smoke settings; use a fresh run directory"
+            )
+        if Path(existing.get("data_root", "")).resolve() != data_root:
+            raise ValueError(
+                "cross-domain data root differs from this run's manifests; "
+                "use a fresh run directory"
+            )
+
+    manifest_hashes = {}
+    full_manifest_hashes = {}
+    annotation_hashes = {}
+    for dataset in DATASETS:
+        canonical, dataset_dir = _dataset_dir(data_root, dataset)
+        annotations_dir = dataset_dir / "annotations"
+        annotation_hashes[f"{canonical}/test.json"] = sha256_file(annotations_dir / "test.json")
+        for shot in SHOTS:
+            if shot:
+                annotation_hashes[f"{canonical}/{shot}_shot.json"] = sha256_file(
+                    annotations_dir / f"{shot}_shot.json"
+                )
+            output = output_root / canonical / f"{shot}shot" / "episodes.json"
+            if existing is None or not output.is_file():
+                _build_manifest(
+                    dataset_name=canonical,
+                    dataset_dir=dataset_dir,
+                    shot=shot,
+                    output=output,
+                    seed=43,
+                    min_box_area_ratio=0.0,
+                )
+                full_manifest_hashes[f"{canonical}/{shot}shot"] = sha256_file(output)
+                if smoke:
+                    payload = read_json(output)
+                    payload["records"] = payload["records"][:smoke_records]
+                    if not payload["records"]:
+                        raise ValueError(f"cannot create a smoke subset from {output}")
+                    payload["smoke_subset_of_records"] = smoke_records
+                    write_json(output, payload)
+            if existing is not None and output.is_file():
+                existing_hash = existing.get("full_manifest_sha256_uncompressed", {}).get(
+                    f"{canonical}/{shot}shot"
+                )
+                if existing_hash:
+                    full_manifest_hashes[f"{canonical}/{shot}shot"] = existing_hash
+            manifest_hashes[f"{canonical}/{shot}shot"] = sha256_file(output)
+
+    if not config_path.is_file():
+        config = {
+            "manifest_set_id": "4b-sft-epoch4-6CD_dataset",
+            "source": "generated from the local data tree with the existing fixed-support few-shot builder",
+            "data_root": str(data_root),
+            "datasets": list(DATASETS),
+            "shots": list(SHOTS),
+            "seed": 43,
+            "prompt_template_version": "inst-v5",
+            "prompt_method": "baseline",
+            "all_query_pairs": True,
+            "visual_enhancement": False,
+            "instruction_enhancement": False,
+            "detpo": False,
+            "smoke_subset_records": expected_subset,
+            "annotation_sha256": annotation_hashes,
+            "manifest_sha256_uncompressed": manifest_hashes,
+            "full_manifest_sha256_uncompressed": full_manifest_hashes,
+        }
+        write_json(config_path, config)
 
 
 def _smoke_training_payload(payload: dict) -> dict:
@@ -199,7 +274,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-gpus", type=int, default=8)
     parser.add_argument("--dataset", type=Path, default=TRAIN_MANIFEST)
     parser.add_argument("--coco-manifest-dir", type=Path, default=COCO_MANIFEST_ROOT)
-    parser.add_argument("--cross-domain-manifest-root", type=Path, default=CROSS_MANIFEST_ROOT)
+    parser.add_argument("--cross-domain-data-root", type=Path, default=CROSS_DATA_ROOT)
     parser.add_argument("--smoke", action="store_true", help="short resumable DDP and generation-evaluation smoke run")
     parser.add_argument("--smoke-eval-interval", type=int, default=1)
     parser.add_argument("--smoke-manifest-records", type=int, default=1)
@@ -268,7 +343,7 @@ def _effective_spec(args: argparse.Namespace, run_dir: Path, num_gpus: int, sour
         "evaluation": {
             "datasets": ["COCO", *DATASETS],
             "shots": list(SHOTS),
-            "cross_domain_manifest_source": str(Path(args.cross_domain_manifest_root).resolve()),
+            "cross_domain_data_root": str(args.cross_domain_data_root.expanduser().resolve()),
             "cross_domain_prompt_method": "baseline inst-v5",
             "fixed_manifest_registry": source_registry["entries"],
             "generation": {
@@ -302,7 +377,7 @@ def _prepare_snapshots(run_dir: Path, train_source: Path, coco_root: Path, cross
             copy_manifest(source, target, max_records=smoke_records if smoke else None)
     for dataset in DATASETS:
         for shot in SHOTS:
-            source = _cross_domain_manifest_path(cross_root, dataset, shot)
+            source = cross_root / dataset / f"{shot}shot" / "episodes.json"
             target = cross_snapshot_root / dataset / f"{shot}shot" / "episodes.json"
             if not target.is_file():
                 copy_manifest(source, target, max_records=smoke_records if smoke else None)
@@ -487,7 +562,7 @@ def _evaluation_command(args: argparse.Namespace, *, run_dir: Path, snapshot_roo
         str(ROOT / "tools" / "evaluate_icl_grpo_checkpoint.py"),
         "--model-path", str(MODEL.resolve()),
         "--adapter-path", str(checkpoint.resolve()),
-        "--data-root", str((ROOT / "data").resolve()),
+        "--data-root", str(args.cross_domain_data_root.expanduser().resolve()),
         "--coco-manifest-dir", str((snapshot_root / "coco").resolve()),
         "--cross-domain-manifest-root", str((snapshot_root / "cross_domain").resolve()),
         "--output-dir", str((run_dir / "eval" / f"step-{step:06d}").resolve()),
@@ -560,7 +635,8 @@ def _run_evaluation(args: argparse.Namespace, *, run_dir: Path, snapshot_root: P
 def execute(args: argparse.Namespace, run_dir: Path) -> None:
     train_source = args.dataset.expanduser().resolve()
     coco_root = args.coco_manifest_dir.expanduser().resolve()
-    cross_root = args.cross_domain_manifest_root.expanduser().resolve()
+    data_root = args.cross_domain_data_root.expanduser().resolve()
+    cross_root = run_dir / "manifests" / "cross_domain"
     model_path = MODEL.resolve()
     if not model_path.is_dir():
         raise NotADirectoryError(f"base model is missing: {model_path}")
@@ -588,6 +664,12 @@ def execute(args: argparse.Namespace, run_dir: Path) -> None:
         raise RuntimeError("the formal baseline requires CUDA BF16 support")
 
     _, train_records = _validate_training_manifest(train_source)
+    _build_cross_domain_manifests(
+        data_root,
+        cross_root,
+        smoke=args.smoke,
+        smoke_records=args.smoke_manifest_records,
+    )
     source_registry = _validate_fixed_eval_manifests(coco_root, cross_root)
     run_dir.mkdir(parents=True, exist_ok=True)
     train_snapshot, snapshot_root, snapshot_registry = _prepare_snapshots(
