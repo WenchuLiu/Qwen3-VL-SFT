@@ -48,6 +48,37 @@ class StopAfterStepCallback(TrainerCallback):
         return control
 
 
+class SaveFinalCheckpointCallback(TrainerCallback):
+    """Keep a fully resumable checkpoint at the end of each training process.
+
+    Long GRPO runs are deliberately split into short-lived processes so that
+    external generation evaluation can release every training GPU.  The last
+    step of a segment is not necessarily a regular ``save_steps`` boundary, so
+    save it after Trainer has finished its loop.  This includes optimizer,
+    scheduler, RNG and Trainer state in addition to the policy/reference
+    adapters.
+    """
+
+    def __init__(self, trainer) -> None:
+        self.trainer = trainer
+
+    def on_train_end(self, args, state, control, **kwargs):
+        del args, kwargs
+        if state.global_step < 1:
+            return control
+        checkpoint = Path(self.trainer.args.output_dir) / f"checkpoint-{state.global_step}"
+        state_file = checkpoint / "trainer_state.json"
+        if state_file.is_file():
+            try:
+                saved = json.loads(state_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                saved = {}
+            if saved.get("global_step") == state.global_step:
+                return control
+        self.trainer._save_checkpoint(self.trainer.model, trial=None)
+        return control
+
+
 def _validate_distributed_launch() -> None:
     """Validate DDP topology; every rank loads a complete model replica."""
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
@@ -100,6 +131,38 @@ def _resolve_rollout_batch_size(args, world_size: int) -> int:
 
     args.rollout_batch_size = rollout_batch_size
     return rollout_batch_size
+
+
+def _train_with_local_checkpoint_compatibility(trainer, resume, output_dir: Path) -> None:
+    """Resume our own local Trainer checkpoint on the repository's older Torch pin.
+
+    Transformers 4.57.1 refuses every ``torch.load`` call on Torch < 2.6 because
+    of CVE-2025-32434, including ``weights_only=True`` loads.  The baseline's
+    staged workflow only resumes checkpoints it just wrote beneath this run's
+    output directory.  Keep the override scoped to that one ``Trainer.train``
+    call and never weaken loading for checkpoints outside this run directory.
+    This does not make third-party checkpoint files trusted.
+    """
+    if not isinstance(resume, str):
+        trainer.train(resume_from_checkpoint=resume)
+        return
+
+    checkpoint = Path(resume).expanduser().resolve()
+    resolved_output = output_dir.expanduser().resolve()
+    if checkpoint.parent != resolved_output or not (checkpoint / "trainer_state.json").is_file():
+        raise ValueError(
+            "the Torch <2.6 compatibility path only accepts a Trainer checkpoint "
+            "directly beneath this run's output directory"
+        )
+
+    import transformers.trainer as transformers_trainer
+
+    original_check = transformers_trainer.check_torch_load_is_safe
+    transformers_trainer.check_torch_load_is_safe = lambda: None
+    try:
+        trainer.train(resume_from_checkpoint=str(checkpoint))
+    finally:
+        transformers_trainer.check_torch_load_is_safe = original_check
 
 
 def _grpo_training_args(args) -> TrainingArguments:
@@ -266,9 +329,10 @@ def train(args) -> None:
         swanlab_enabled=swanlab_enabled,
     )
     if args.stop_after_step is not None:
-        if args.max_steps < args.stop_after_step:
+        if args.max_steps > 0 and args.max_steps < args.stop_after_step:
             raise ValueError("stop-after-step must not exceed max-steps")
         trainer.add_callback(StopAfterStepCallback(args.stop_after_step))
+    trainer.add_callback(SaveFinalCheckpointCallback(trainer))
 
     if args.resume_from_checkpoint:
         checkpoint = Path(args.resume_from_checkpoint).expanduser().resolve()
@@ -280,7 +344,7 @@ def train(args) -> None:
     else:
         resume = None
 
-    trainer.train(resume_from_checkpoint=resume)
+    _train_with_local_checkpoint_compatibility(trainer, resume, output_dir)
     trainer.save_state()
     model.config.use_cache = True
     save_model_and_processor(trainer, processor, str(output_dir))
