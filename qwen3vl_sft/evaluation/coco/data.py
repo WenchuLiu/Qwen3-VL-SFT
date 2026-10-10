@@ -9,7 +9,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
-from .protocol import PROTOCOL_NAME, PROMPT_TEMPLATE_VERSION, build_sft_record
+from .protocol import (
+    FLEXIBLE_EPISODE_PROTOCOL,
+    FLEXIBLE_EPISODE_TEMPLATE_VERSION,
+    PROTOCOL_NAME,
+    PROMPT_TEMPLATE_VERSION,
+    build_sft_record,
+)
 
 
 @dataclass(frozen=True)
@@ -221,6 +227,273 @@ def _sample_support(
             f"but {shots} are required"
         )
     return rng.sample(candidates, shots)
+
+
+def _episode_frame_record(frame: CocoFrame, *, label: str | None = None) -> dict:
+    """Serialize one frame for a flexible episode, retaining source IDs."""
+    result = _frame_record(frame)
+    if label is not None:
+        # This is the label used in the support question and answer. It may
+        # differ from the query category for distractor examples.
+        result["category"] = label
+    return result
+
+
+def _make_flexible_episode(
+    *,
+    record_id: str,
+    episode_type: str,
+    category: str,
+    target_subclass: str,
+    support_frames: Sequence[CocoFrame],
+    support_label: str,
+    query_frame: CocoFrame,
+    pair_id: str | None = None,
+) -> dict:
+    support = [
+        _episode_frame_record(frame, label=support_label)
+        for frame in support_frames
+    ]
+    query = _episode_frame_record(query_frame)
+    return {
+        "id": record_id,
+        "protocol": FLEXIBLE_EPISODE_PROTOCOL,
+        "prompt_template_version": FLEXIBLE_EPISODE_TEMPLATE_VERSION,
+        "episode_type": episode_type,
+        "category": category,
+        "num_shots": len(support),
+        "support": support,
+        "query": query,
+        # These fields are bookkeeping metadata. Prompt construction only
+        # reads category, support, and query, so neither the type nor subclass
+        # is disclosed to the model.
+        "target_subclass": target_subclass,
+        "query_image_id": query_frame.image_id,
+        "support_image_ids": [frame.image_id for frame in support_frames],
+        "pair_id": pair_id,
+    }
+
+
+def build_flexible_episode_records(
+    frames_by_category: Mapping[str, Sequence[CocoFrame]],
+    *,
+    upper_category_map: Mapping[str, Sequence[str]],
+    num_episodes: int = 11820,
+    seed: int = 42,
+    distractor_category: str = "dog",
+) -> list[dict]:
+    """Build paired standard, support-defined, and distractor COCO episodes.
+
+    The requested total must be divisible by 20 so the default 50/30/20
+    mixture is exact and support-defined examples can be emitted in pairs.
+    Query and support frames come only from ``frames_by_category``, which is
+    expected to have been loaded from the selected image-ID pool.
+    """
+    if num_episodes < 20 or num_episodes % 20:
+        raise ValueError("num_episodes must be at least 20 and divisible by 20")
+    if not distractor_category or distractor_category not in frames_by_category:
+        raise ValueError(
+            f"distractor category {distractor_category!r} is unavailable in the image pool"
+        )
+
+    normalized_groups: dict[str, list[str]] = {}
+    for upper, children in upper_category_map.items():
+        if not isinstance(upper, str) or not upper.strip():
+            raise ValueError("upper-category names must be non-empty strings")
+        if not isinstance(children, Sequence) or isinstance(children, (str, bytes)):
+            raise ValueError(f"children for {upper!r} must be a list of COCO class names")
+        child_names = [str(child).strip() for child in children]
+        if len(child_names) < 2 or any(not child for child in child_names):
+            raise ValueError(f"upper category {upper!r} must have at least two children")
+        if len(set(child_names)) != len(child_names):
+            raise ValueError(f"upper category {upper!r} contains duplicate children")
+        if upper in child_names:
+            raise ValueError(f"upper category {upper!r} cannot contain itself")
+        unknown = [child for child in child_names if child not in frames_by_category]
+        if unknown:
+            raise ValueError(
+                f"upper category {upper!r} references classes missing from the image pool: "
+                f"{', '.join(unknown)}"
+            )
+        normalized_groups[upper.strip()] = child_names
+    if not normalized_groups:
+        raise ValueError("upper_category_map must contain at least one group")
+
+    standard_count = num_episodes // 2
+    support_defined_count = num_episodes * 3 // 10
+    distractor_count = num_episodes // 5
+    standard_shots = (0, 1, 2, 4)
+    positive_shots = (1, 2, 4)
+    rng = random.Random(seed)
+
+    def available_categories(shot: int) -> list[str]:
+        return sorted(
+            category
+            for category, frames in frames_by_category.items()
+            if len(frames) > shot
+        )
+
+    standard_records: list[dict] = []
+    for index in range(standard_count):
+        shot = standard_shots[index % len(standard_shots)]
+        categories = available_categories(shot)
+        if not categories:
+            raise ValueError(f"no categories have enough frames for {shot}-shot episodes")
+        category = rng.choice(categories)
+        query_frame = rng.choice(list(frames_by_category[category]))
+        support_frames = _sample_support(
+            frames_by_category[category], query_frame, shot, rng
+        )
+        standard_records.append(
+            _make_flexible_episode(
+                record_id=f"coco_flex_standard_{index:07d}",
+                episode_type="standard",
+                category=category,
+                target_subclass=category,
+                support_frames=support_frames,
+                support_label=category,
+                query_frame=query_frame,
+            )
+        )
+
+    # A candidate query must contain at least two mapped classes, each with
+    # enough other images to support the largest (4-shot) example.
+    support_defined_candidates: list[tuple[str, CocoFrame, list[str]]] = []
+    for upper, children in sorted(normalized_groups.items()):
+        image_ids = sorted(
+            {
+                frame.image_id
+                for child in children
+                for frame in frames_by_category[child]
+            },
+            key=_identifier_sort_key,
+        )
+        child_frames_by_id = {
+            child: {frame.image_id: frame for frame in frames_by_category[child]}
+            for child in children
+        }
+        for image_id in image_ids:
+            present = [
+                child
+                for child in children
+                if image_id in child_frames_by_id[child]
+                and len(frames_by_category[child]) >= 5
+            ]
+            if len(present) < 2:
+                continue
+            # Store the first available mapped-class frame for image metadata;
+            # each episode below selects the target-specific frame and boxes.
+            support_defined_candidates.append(
+                (upper, child_frames_by_id[present[0]][image_id], present)
+            )
+    if not support_defined_candidates:
+        raise ValueError(
+            "no query image in the selected pool contains at least two mapped "
+            "subclasses with enough support images"
+        )
+
+    support_defined_records: list[dict] = []
+    support_pair_count = support_defined_count // 2
+    for pair_index in range(support_pair_count):
+        shot = positive_shots[pair_index % len(positive_shots)]
+        upper, candidate_frame, present = rng.choice(support_defined_candidates)
+        target_classes = rng.sample(present, 2)
+        pair_id = f"coco_flex_support_defined_pair_{pair_index:07d}"
+        for target_index, target_subclass in enumerate(target_classes):
+            query_frame = next(
+                frame
+                for frame in frames_by_category[target_subclass]
+                if frame.image_id == candidate_frame.image_id
+            )
+            support_frames = _sample_support(
+                frames_by_category[target_subclass], query_frame, shot, rng
+            )
+            support_defined_records.append(
+                _make_flexible_episode(
+                    record_id=(
+                        f"coco_flex_support_defined_{pair_index:07d}_{target_index}"
+                    ),
+                    episode_type="support_defined",
+                    category=upper,
+                    target_subclass=target_subclass,
+                    support_frames=support_frames,
+                    support_label=target_subclass,
+                    query_frame=query_frame,
+                    pair_id=pair_id,
+                )
+            )
+
+    # Pair distractor examples with a standard example on the exact same
+    # query image/category. The target class must differ from the distractor.
+    distractor_frames = frames_by_category[distractor_category]
+    distractor_image_ids = {frame.image_id for frame in distractor_frames}
+    distractor_pair_candidates_by_shot = {
+        shot: [
+            record
+            for record in standard_records
+            if record["num_shots"] == shot
+            and record["category"] != distractor_category
+            and len(distractor_frames)
+            - int(record["query_image_id"] in distractor_image_ids)
+            >= shot
+        ]
+        for shot in positive_shots
+    }
+    distractor_shot_schedule = [
+        positive_shots[index % len(positive_shots)]
+        for index in range(distractor_count)
+    ]
+    needed_by_shot = {
+        shot: distractor_shot_schedule.count(shot)
+        for shot in positive_shots
+    }
+    paired_standard_records_by_shot: dict[int, list[dict]] = {}
+    for shot in positive_shots:
+        candidates = distractor_pair_candidates_by_shot[shot]
+        needed = needed_by_shot[shot]
+        if len(candidates) < needed:
+            raise ValueError(
+                f"only {len(candidates)} standard {shot}-shot queries can be paired "
+                f"with {distractor_category!r} supports, but {needed} are required"
+            )
+        paired_standard_records_by_shot[shot] = rng.sample(candidates, needed)
+    paired_standard_records = [
+        paired_standard_records_by_shot[shot].pop()
+        for shot in distractor_shot_schedule
+    ]
+    distractor_records: list[dict] = []
+    for pair_index, standard in enumerate(paired_standard_records):
+        category = standard["category"]
+        query_id = standard["query_image_id"]
+        query_frame = next(
+            frame for frame in frames_by_category[category] if frame.image_id == query_id
+        )
+        shot = int(standard["num_shots"])
+        support_frames = _sample_support(
+            distractor_frames, query_frame, shot, rng
+        )
+        pair_id = f"coco_flex_standard_distractor_pair_{pair_index:07d}"
+        standard["pair_id"] = pair_id
+        distractor_records.append(
+            _make_flexible_episode(
+                record_id=f"coco_flex_distractor_{pair_index:07d}",
+                episode_type="distractor",
+                category=category,
+                target_subclass=category,
+                support_frames=support_frames,
+                support_label=distractor_category,
+                query_frame=query_frame,
+                pair_id=pair_id,
+            )
+        )
+
+    records = [*standard_records, *support_defined_records, *distractor_records]
+    if len(records) != num_episodes:
+        raise RuntimeError(
+            f"episode builder produced {len(records)} records, expected {num_episodes}"
+        )
+    rng.shuffle(records)
+    return records
 
 
 def build_train_records(

@@ -127,6 +127,62 @@ tested video-training configuration.
 
 ## Score-aware GRPO
 
+### Flexible COCO episodes from the original 4B model
+
+For a fresh environment, check out the same code revision, install the
+repository dependencies in the environment that provides CUDA-enabled PyTorch,
+and make the COCO train images and annotations available under one root:
+
+```text
+COCO_ROOT/
+  annotations/instances_train2017.json
+  train2017/
+```
+
+Then build the shared 10% image pool and all three episode types, and start
+LoRA-GRPO directly from the original 4B instruct checkpoint:
+
+```bash
+COCO_ROOT=/datasets/COCO \
+MODEL_NAME_OR_PATH=Qwen/Qwen3-VL-4B-Instruct \
+CUDA_VISIBLE_DEVICES=0,1 \
+NPROC_PER_NODE=2 \
+ROLLOUT_BATCH_SIZE=2 \
+ROLLOUT_N=4 \
+MAX_PROMPT_LENGTH=8192 \
+MAX_RESPONSE_LENGTH=512 \
+MAX_PIXELS=640000 \
+OUTPUT_DIR=outputs/train/grpo/flexible-coco-qwen3vl-4b \
+bash scripts/train_flexible_coco_grpo_4b.sh
+```
+
+The canonical 10% image-ID manifest is committed at
+`docs/coco_train_image_ids_10pct_seed42.json`, so the same image pool is used
+across environments. If that manifest is absent, the script recreates it from
+the COCO annotation file using fraction `0.1` and pool seed `42`. It then builds
+the episode JSON and launches training. The default episode budget is 11,820
+with the 50/30/20 mixture; override `NUM_EPISODES` only with a multiple of 20.
+Set `ANNOTATIONS` and `IMAGE_ROOT` if the COCO directory does not use the
+layout above.
+
+The run loads the base model, creates a fresh rank-64 LoRA adapter, and does
+not load an SFT adapter. It keeps the existing `box_iou`, `score`, and `format`
+rewards and scores query boxes only. For the dual-A40 setup, it defaults to
+two DDP ranks with one full 4B model replica per card, a global rollout batch
+of 2 prompts (one per card), and `ROLLOUT_N=4` sampled responses per prompt.
+This keeps GRPO's comparison group at four while limiting each rank to one
+episode at a time. It uses bf16, two epochs, an 8,192-token prompt limit to
+retain 4-shot context, a 512-token response limit, and at most 640,000 pixels
+per image. The default output is under `outputs/train/grpo/`. Set
+`CUDA_VISIBLE_DEVICES` and `NPROC_PER_NODE` to the two A40 devices available.
+If memory is tight, lower `MAX_PIXELS` first; `ROLLOUT_N` can be reduced to 2
+(the minimum for GRPO), while `ROLLOUT_BATCH_SIZE` should remain divisible by
+the number of ranks.
+
+If the episode JSON already exists, skip rebuilding it with
+`BUILD_DATASET=false DATASET=/path/to/train_episodes.json`. For a local copy of
+the original checkpoint, set `MODEL_NAME_OR_PATH=/path/to/Qwen3-VL-4B-Instruct`.
+
 Use the standalone GRPO entry point for reinforcement learning:
 
 ```bash

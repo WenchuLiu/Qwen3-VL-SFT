@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from qwen3vl_sft.evaluation.coco.data import (
+    build_flexible_episode_records,
     build_eval_records,
     build_train_records,
     load_coco_frames,
@@ -22,6 +23,8 @@ from qwen3vl_sft.evaluation.coco.data import (
     write_json,
 )
 from qwen3vl_sft.evaluation.coco.protocol import (
+    FLEXIBLE_EPISODE_PROTOCOL,
+    FLEXIBLE_EPISODE_TEMPLATE_VERSION,
     LOSS_MODE,
     PROTOCOL_NAME,
     PROMPT_TEMPLATE_VERSION,
@@ -77,6 +80,47 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Build one episode for every query image/category pair.",
     )
+
+    episodes = subparsers.add_parser(
+        "episodes",
+        help="build flexible standard/support-defined/distractor training episodes",
+    )
+    episodes.add_argument("--annotations", type=Path, required=True)
+    episodes.add_argument("--image-root", type=Path, required=True)
+    episodes.add_argument(
+        "--image-ids",
+        type=Path,
+        required=True,
+        help="10% image-ID manifest used by the existing COCO training split",
+    )
+    episodes.add_argument(
+        "--image-pool-seed",
+        type=int,
+        default=42,
+        help="Expected seed recorded in the 10% image-ID manifest.",
+    )
+    episodes.add_argument(
+        "--upper-category-map",
+        type=Path,
+        default=ROOT / "docs/coco_upper_category_map.json",
+    )
+    episodes.add_argument(
+        "--output",
+        type=Path,
+        default=ROOT / "data/coco/train_episodes_10pct_flexible_11820.json",
+    )
+    episodes.add_argument("--num-episodes", type=int, default=11820)
+    episodes.add_argument("--seed", type=int, default=42)
+    episodes.add_argument("--min-box-area-ratio", type=float, default=0.001)
+    episodes.add_argument("--distractor-category", default="dog")
+
+    image_ids = subparsers.add_parser(
+        "image-ids", help="write a deterministic image-ID manifest"
+    )
+    image_ids.add_argument("--annotations", type=Path, required=True)
+    image_ids.add_argument("--output", type=Path, required=True)
+    image_ids.add_argument("--fraction", type=float, default=0.1)
+    image_ids.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
 
 
@@ -175,12 +219,115 @@ def build_eval(args: argparse.Namespace) -> None:
     print(f"Wrote {len(records)} fixed evaluation episodes to {args.output}")
 
 
+def build_episodes(args: argparse.Namespace) -> None:
+    for path in (args.annotations, args.image_ids, args.upper_category_map):
+        if not path.is_file():
+            raise FileNotFoundError(path)
+    if not args.image_root.is_dir():
+        raise NotADirectoryError(args.image_root)
+
+    with args.image_ids.open("r", encoding="utf-8") as handle:
+        image_manifest = json.load(handle)
+    if (
+        not isinstance(image_manifest, dict)
+        or float(image_manifest.get("fraction", -1)) != 0.1
+    ):
+        raise ValueError(
+            "--image-ids must be the existing 10% COCO image-ID manifest "
+            "with fraction: 0.1"
+        )
+    try:
+        manifest_seed = int(image_manifest["seed"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("10% image-ID manifest must include its integer seed") from error
+    if manifest_seed != args.image_pool_seed:
+        raise ValueError(
+            f"image-ID manifest seed is {manifest_seed}, expected {args.image_pool_seed}"
+        )
+    selected_ids = read_image_ids(args.image_ids)
+
+    with args.upper_category_map.open("r", encoding="utf-8") as handle:
+        upper_map_payload = json.load(handle)
+    if isinstance(upper_map_payload, dict) and "groups" in upper_map_payload:
+        upper_category_map = upper_map_payload["groups"]
+    else:
+        upper_category_map = upper_map_payload
+    if not isinstance(upper_category_map, dict):
+        raise ValueError("upper-category map must be a JSON object of groups")
+
+    frames = load_coco_frames(
+        args.annotations,
+        args.image_root,
+        min_box_area_ratio=args.min_box_area_ratio,
+        image_ids=selected_ids,
+    )
+    records = build_flexible_episode_records(
+        frames,
+        upper_category_map=upper_category_map,
+        num_episodes=args.num_episodes,
+        seed=args.seed,
+        distractor_category=args.distractor_category,
+    )
+    counts_by_type: dict[str, int] = {}
+    counts_by_shot: dict[str, int] = {}
+    for record in records:
+        episode_type = str(record["episode_type"])
+        shot = str(record["num_shots"])
+        counts_by_type[episode_type] = counts_by_type.get(episode_type, 0) + 1
+        counts_by_shot[shot] = counts_by_shot.get(shot, 0) + 1
+    write_json(
+        args.output,
+        {
+            "schema": "coco-flexible-detection-episodes-v1",
+            "protocol": FLEXIBLE_EPISODE_PROTOCOL,
+            "prompt_template_version": FLEXIBLE_EPISODE_TEMPLATE_VERSION,
+            "source_annotations": str(args.annotations.resolve()),
+            "image_ids_manifest": str(args.image_ids.resolve()),
+            "image_pool_size": len(selected_ids),
+            "image_pool_fraction": 0.1,
+            "image_pool_seed": manifest_seed,
+            "upper_category_map_file": str(args.upper_category_map.resolve()),
+            "upper_category_map": upper_category_map,
+            "seed": args.seed,
+            "num_episodes": len(records),
+            "episode_type_counts": counts_by_type,
+            "shot_counts": counts_by_shot,
+            "records": records,
+        },
+    )
+    print(
+        f"Wrote {len(records)} flexible episodes from the 10% pool "
+        f"({counts_by_type}) to {args.output}"
+    )
+
+
+def build_image_ids(args: argparse.Namespace) -> None:
+    if not args.annotations.is_file():
+        raise FileNotFoundError(args.annotations)
+    selected_ids = select_image_ids(args.annotations, args.fraction, args.seed)
+    write_json(
+        args.output,
+        {
+            "fraction": args.fraction,
+            "seed": args.seed,
+            "image_ids": selected_ids,
+        },
+    )
+    print(
+        f"Wrote {len(selected_ids)} image IDs ({args.fraction:.0%}) to {args.output}"
+    )
+
+
 def main() -> None:
     args = parse_args()
     if args.command == "train":
         build_train(args)
-    else:
+    elif args.command == "eval":
         build_eval(args)
+    elif args.command == "episodes":
+        build_episodes(args)
+    else:
+        build_image_ids(args)
 
 
 if __name__ == "__main__":

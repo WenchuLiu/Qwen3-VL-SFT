@@ -17,6 +17,8 @@ from ...data.schema import validate_sft_record
 
 PROTOCOL_NAME = "positive_category_conditioned_icl"
 PROMPT_TEMPLATE_VERSION = "inst-v5"
+FLEXIBLE_EPISODE_PROTOCOL = "flexible_support_conditioned_detection"
+FLEXIBLE_EPISODE_TEMPLATE_VERSION = "flexible-episode-v1"
 # This follows the prompt used by ../DetPO/detpo/utils.py for Qwen3-VL-8B.
 # Keep it separate from the ICL template version so changing DetPO does not
 # invalidate baseline/IE episode manifests.
@@ -60,6 +62,14 @@ ZERO_SHOT_TRAIN_SYSTEM_PROMPT = (
     "Output only the requested JSON list, using 0-1000 normalized coordinates; "
     "output [] when no requested object is present."
 )
+
+FLEXIBLE_EPISODE_SYSTEM_PROMPT = (
+    "你是一个目标检测助手。类别名称提供目标的语义线索。"
+    "相关且一致的示例用于细化目标；无关示例应忽略。"
+    "仅输出 query 图像的检测结果。边界框使用 0–1000 归一化坐标；"
+    "support 图像的回答仅作为示例，不要在最终结果中复述。"
+)
+FLEXIBLE_EPISODE_TYPES = frozenset({"standard", "support_defined", "distractor"})
 
 
 def build_question(
@@ -106,6 +116,22 @@ def build_question(
             "descending confidence."
         )
     return question + '[{"bbox_2d":[x1,y1,x2,y2],"label":"class_name"}].'
+
+
+def build_flexible_episode_question(
+    category: str,
+    *,
+    query: bool = False,
+    include_confidence: bool = False,
+) -> str:
+    """Build a flexible-episode prompt with an explicit output label."""
+    question = build_question(
+        category,
+        query=query,
+        include_confidence=include_confidence,
+    )
+    scope = "query detections" if query else "detections"
+    return question + f' Label all {scope} as "{category}".'
 
 
 def build_detpo_question(category: str, category_description: str) -> str:
@@ -449,6 +475,10 @@ def build_eval_messages(
         ]
 
     zero_shot = not support
+    episode_type = record.get("episode_type")
+    flexible_episode = episode_type is not None
+    if flexible_episode and episode_type not in FLEXIBLE_EPISODE_TYPES:
+        raise ValueError(f"unsupported episode_type: {episode_type!r}")
     messages: list[dict] = [
         {
             "role": "system",
@@ -456,18 +486,30 @@ def build_eval_messages(
                 {
                     "type": "text",
                     "text": (
-                        ZERO_SHOT_EVAL_SYSTEM_PROMPT
-                        if zero_shot
-                        else EVAL_SYSTEM_PROMPT
+                        FLEXIBLE_EPISODE_SYSTEM_PROMPT
+                        if flexible_episode
+                        else (
+                            ZERO_SHOT_EVAL_SYSTEM_PROMPT
+                            if zero_shot
+                            else EVAL_SYSTEM_PROMPT
+                        )
                     ),
                 }
             ],
         }
     ]
-    support_question = build_question(category)
     for frame in support:
         if not isinstance(frame, dict):
             raise ValueError("support frames must be objects")
+        support_category = frame.get("category", frame.get("support_category", category))
+        if not isinstance(support_category, str) or not support_category.strip():
+            raise ValueError("support frame category must be a non-empty string")
+        support_category = support_category.strip()
+        support_question = (
+            build_flexible_episode_question(support_category)
+            if flexible_episode
+            else build_question(support_category)
+        )
         messages.extend(
             [
                 {
@@ -489,7 +531,12 @@ def build_eval_messages(
                 {
                     "role": "assistant",
                     "content": [
-                        {"type": "text", "text": format_answer(category, _frame_boxes(frame))}
+                        {
+                            "type": "text",
+                            "text": format_answer(
+                                support_category, _frame_boxes(frame)
+                            ),
+                        }
                     ],
                 },
             ]
@@ -507,11 +554,19 @@ def build_eval_messages(
                 },
                 {
                     "type": "text",
-                    "text": build_question(
-                        category,
-                        query=not zero_shot,
-                        include_confidence=True,
-                        category_description=category_description,
+                    "text": (
+                        build_flexible_episode_question(
+                            category,
+                            query=not zero_shot,
+                            include_confidence=True,
+                        )
+                        if flexible_episode
+                        else build_question(
+                            category,
+                            query=not zero_shot,
+                            include_confidence=True,
+                            category_description=category_description,
+                        )
                     ),
                 },
             ],

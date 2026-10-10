@@ -10,8 +10,10 @@ from its own location and uses repository-relative defaults.
 | `train_lora_r64_2x3090.sh` | two-GPU r=64 LoRA SFT with per-epoch COCO evaluation |
 | `train_lora_r64_4x3090.sh` | four-GPU r=64 LoRA SFT with per-epoch COCO evaluation |
 | `train_grpo.sh` | score-aware multimodal GRPO |
+| `train_flexible_coco_grpo_4b.sh` | build the flexible COCO dataset and run fresh 4B LoRA-GRPO |
 | `build_coco_train.sh` | build COCO SFT records |
 | `build_coco_eval.sh` | build a fixed COCO episode manifest |
+| `build_flexible_coco_episodes.sh` | build paired flexible COCO GRPO episodes from the 10% pool |
 | `evaluate_coco.sh` | evaluate one fixed COCO manifest |
 | `evaluate_coco_benchmark.sh` | build (if needed) and evaluate the COCO manifest |
 | `evaluate_fewshot.sh` | evaluate cross-domain few-shot datasets |
