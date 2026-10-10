@@ -17,6 +17,25 @@ IMAGE_POOL_SEED="${IMAGE_POOL_SEED:-42}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-2}"
 
 cd "${ROOT_DIR}"
+
+# This run must start from the original checkpoint already present on disk.
+# Validate it before building data so a missing path cannot trigger a Hub lookup.
+if [[ ! -d "${MODEL_NAME_OR_PATH}" ]]; then
+  echo "local model directory not found: ${MODEL_NAME_OR_PATH}" >&2
+  echo "set MODEL_NAME_OR_PATH to the local Qwen3-VL-4B-Instruct directory" >&2
+  exit 1
+fi
+MODEL_NAME_OR_PATH="$(cd "${MODEL_NAME_OR_PATH}" && pwd)"
+if [[ ! -f "${MODEL_NAME_OR_PATH}/config.json" ]]; then
+  echo "model config not found: ${MODEL_NAME_OR_PATH}/config.json" >&2
+  exit 1
+fi
+
+# Keep all model and dataset loader calls offline for this local-checkpoint run.
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
+
 case "${BUILD_DATASET:-true}" in
   1|true|TRUE|yes|YES)
     COCO_ROOT="${COCO_ROOT}" \

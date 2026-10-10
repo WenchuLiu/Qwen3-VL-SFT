@@ -140,11 +140,12 @@ COCO_ROOT/
 ```
 
 Then build the shared 10% image pool and all three episode types, and start
-LoRA-GRPO directly from the original 4B instruct checkpoint:
+LoRA-GRPO directly from the original 4B instruct checkpoint already stored
+locally. Set `MODEL_NAME_OR_PATH` to that local directory:
 
 ```bash
 COCO_ROOT=/datasets/COCO \
-MODEL_NAME_OR_PATH=Qwen/Qwen3-VL-4B-Instruct \
+MODEL_NAME_OR_PATH=/path/to/local/Qwen3-VL-4B-Instruct \
 CUDA_VISIBLE_DEVICES=0,1 \
 NPROC_PER_NODE=2 \
 ROLLOUT_BATCH_SIZE=2 \
@@ -179,6 +180,11 @@ If memory is tight, lower `MAX_PIXELS` first; `ROLLOUT_N` can be reduced to 2
 (the minimum for GRPO), while `ROLLOUT_BATCH_SIZE` should remain divisible by
 the number of ranks.
 
+The flexible COCO launcher checks that `MODEL_NAME_OR_PATH` is a local model
+directory containing `config.json` and enables offline mode for Hugging Face
+loaders. It exits before dataset construction if the local model path is
+missing; it does not download the checkpoint.
+
 If the episode JSON already exists, skip rebuilding it with
 `BUILD_DATASET=false DATASET=/path/to/train_episodes.json`. For a local copy of
 the original checkpoint, set `MODEL_NAME_OR_PATH=/path/to/Qwen3-VL-4B-Instruct`.
@@ -186,7 +192,7 @@ the original checkpoint, set `MODEL_NAME_OR_PATH=/path/to/Qwen3-VL-4B-Instruct`.
 Use the standalone GRPO entry point for reinforcement learning:
 
 ```bash
-MODEL_NAME_OR_PATH=Qwen/Qwen3-VL-4B-Instruct \
+MODEL_NAME_OR_PATH=/path/to/local/Qwen3-VL-4B-Instruct \
 DATASET=data/coco/train_sft.json \
 OUTPUT_DIR=outputs/train/grpo/qwen3vl-grpo \
 bash scripts/train_grpo.sh
